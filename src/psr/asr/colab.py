@@ -18,6 +18,15 @@ import tempfile
 REMOTE_JOB = pathlib.Path(__file__).with_name("remote_job.py")
 
 
+class RemoteJobFailed(RuntimeError):
+    """遠端工作本身丟了 Python 例外——是程式錯誤，不是基礎設施問題。
+
+    與 ColabUnavailable 分開：重開 session 或換 Groq 都救不了程式錯誤，
+    把它當成「拿不到 GPU」只會浪費一次重試，還把真正原因藏在錯的訊息後面
+    （2026-10-09 第一次 dry-run 就是這樣：PyAV 不相容被回報成配額用完）。
+    """
+
+
 class ColabUnavailable(RuntimeError):
     """基礎設施層失敗——配不到 GPU、VM 被斷、超過硬超時。
 
@@ -28,6 +37,8 @@ class ColabUnavailable(RuntimeError):
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
+# IPython 風格的例外結尾，例如 "TypeError: open() got an unexpected keyword"。
+_PY_EXCEPTION = re.compile(r"^\w+(?:Error|Exception): ", re.MULTILINE)
 
 
 def _tail(text, n=600):
@@ -107,7 +118,10 @@ class ColabSession:
                 run = _colab("exec", "-s", self.name, "--timeout", str(timeout),
                              "-f", str(REMOTE_JOB), timeout=timeout + 300)
                 if "REMOTE_JOB_OK" not in (run.stdout or ""):
-                    raise ColabUnavailable(f"遠端工作未完成：{_tail(run.stderr or run.stdout)}")
+                    detail = _tail(run.stderr or run.stdout)
+                    if _PY_EXCEPTION.search(detail):
+                        raise RemoteJobFailed(f"遠端工作丟出例外：{detail}")
+                    raise ColabUnavailable(f"遠端工作未完成：{detail}")
 
                 for remote, local in (("/content/words.json", out_dir / "words.json"),
                                       ("/content/meta.json", out_dir / "meta.json")):

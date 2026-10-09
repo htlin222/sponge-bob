@@ -83,10 +83,27 @@ def load_model(model_size="large-v3"):
     return model
 
 
+def decode_pcm(path):
+    """用 ffmpeg 解成 16kHz 單聲道 float32，直接交給 faster-whisper。
+
+    不讓 faster-whisper 自己用 PyAV 解檔：Colab 映像（2026-10 起 Python 3.13）
+    預裝的 PyAV 已移除 `av.open(metadata_errors=...)`，faster-whisper 1.2.0
+    照樣傳這個參數，結果是 TypeError。ffmpeg 是 VM 本來就有的系統工具，
+    不隨 pip 解析器漂移。
+    """
+    import numpy as np
+
+    raw = subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", path,
+         "-f", "f32le", "-ac", "1", "-ar", "16000", "-"],
+        capture_output=True, check=True).stdout
+    return np.frombuffer(raw, dtype=np.float32)
+
+
 def transcribe(audio, prompt, model_size="large-v3"):
     model = load_model(model_size)
     segments, info = model.transcribe(
-        audio,
+        decode_pcm(audio),
         language="zh",
         initial_prompt=prompt or None,
         # 以下每一項都是為了確定性，不是為了品質，改動前請先讀設計文件 §5 鎖 2。
