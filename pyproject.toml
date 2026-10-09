@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 psr = "psr.cli:main"
+bob = "psr.bob:main"
 
 [dependency-groups]
 dev = [
