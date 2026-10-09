@@ -18,8 +18,9 @@ from difflib import SequenceMatcher
 from pypinyin import lazy_pinyin
 
 from psr.models import Cue
+from psr.text import to_traditional
 
-FIX_VERSION = "1"
+FIX_VERSION = "2"  # 2：先把殘留的簡體字形轉繁（加標點失敗的塊漏了繁化）
 # 由實測誤聽校準：佳音哥→章魚哥 0.57 要放行，我做不得白大姨→派大星 0.42 要擋。
 SOUND_THRESHOLD = 0.55
 MAX_LENGTH_CHANGE = 2
@@ -68,6 +69,11 @@ class Fix:
     cue: int
     wrong: str
     right: str
+
+
+def traditionalize(cues: list[Cue]) -> list[Cue]:
+    """確定性地把字形統一成台灣繁體（s2tw），補救 pipeline 漏掉繁化的字幕。"""
+    return [replace(c, text=to_traditional(c.text)) for c in cues]
 
 
 def apply_fixes(cues: list[Cue], proposals: list[dict]) -> tuple[list[Cue], list[Fix], list[Fix]]:

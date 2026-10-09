@@ -55,7 +55,7 @@ def _write(service, name: str, folder_id: str, text: str) -> str:
 
 
 def _fix_episode(text: str, terms: list[str], model: str):
-    cues = parse(text)
+    cues = fix.traditionalize(parse(text))
     raw = claude_cli.ask(fix.user_prompt(cues), system=fix.system_prompt(terms),
                          schema=fix.SCHEMA, model=model)
     return fix.apply_fixes(cues, raw.get("fixes", []))
@@ -103,7 +103,7 @@ def cmd_fix(args) -> int:
                 cues, applied, skipped = fut.result()
                 if fresh:
                     _write(service, stem + BACKUP_SUFFIX, work_id, source)
-                new_text = render(cues) if applied else source
+                new_text = render(cues)
                 md5_after = (_write(service, f["name"], args.folder, new_text)
                              if new_text != current else f.get("md5Checksum") or _md5(current))
                 quotedb.record_fix(db, stem, md5_before=_md5(source), md5_after=md5_after,
