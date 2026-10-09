@@ -1,0 +1,159 @@
+# 術語表 — 一份餵兩處
+#
+#   Whisper 的 prompt 參數（上限僅 224 tokens）→ 只取 whisper_hint: true 的 correct 詞，
+#                                                依本檔順序貪婪填充，不做智慧排序
+#   潤稿 LLM 的 prompt                          → 可用完整表
+#
+# 為什麼順序固定、不排序：prompt 內容一旦隨環境變動，stage key 就不再代表輸入，
+# 快取失效判斷會出錯。詳見設計文件 §5 鎖 3 與 §14。
+#
+# wrong 欄位列的是「實際發生過的錯誤轉錄」，不是想像的。多數條目來自
+# 2026-08-16 那支 87 分鐘實片的逐字稿統計。
+
+version: 1
+
+terms:
+  # ── 人名 ────────────────────────────────────────────────
+  - correct: "林協霆"
+    wrong: ["林協廷", "林協庭", "林謝霆", "林協停"]
+    whisper_hint: true
+    note: "講者本人。實測 Whisper 一律聽成「林協廷」。"
+
+  # ── AI 工具（實測錯最多的一類）─────────────────────────
+  - correct: "Claude Code"
+    wrong: ["Cloud Code", "Cloud code", "克勞德 Code", "Claude 扣的", "cloud code"]
+    whisper_hint: true
+    note: "實測逐字稿出現 Cloud ×12、Code ×10，幾乎都是 Claude Code 被聽成 Cloud Code。"
+
+  - correct: "prompt"
+    wrong: ["Promp", "PROMP", "prom pt", "普羅普", "破音批"]
+    whisper_hint: true
+    note: "Whisper 把英文切成 BPE 子詞，prompt 常被截成 Promp。實測 ×24。"
+
+  - correct: "Antigravity"
+    wrong: ["Anti-Gravity", "anti-gravity", "安提葛拉維提"]
+    whisper_hint: true
+    note: "Google 的 agent IDE。實測 ×15，一律被寫成帶連字號的形式。"
+
+  - correct: "Codex"
+    wrong: ["Code X", "寇德克斯", "Cortex"]
+    whisper_hint: true
+
+  - correct: "Gemini"
+    wrong: ["gemini", "傑米尼", "Jimmy Knee"]
+    whisper_hint: true
+
+  - correct: "ChatGPT"
+    wrong: ["Chat GPT", "chatGPT", "洽 GPT"]
+
+  - correct: "subagent"
+    wrong: ["sub agent", "sub-agent", "薩布 agent"]
+
+  - correct: "agent"
+    wrong: ["Agent", "阿january", "艾建特"]
+    note: "統一小寫；句首由潤稿 LLM 自行處理。"
+
+  - correct: "MCP"
+    wrong: ["MCB", "MSP", "em see pee"]
+
+  - correct: "LLM"
+    wrong: ["LLN", "L L M", "艾偷偷艾姆"]
+
+  # ── 實證醫學 ────────────────────────────────────────────
+  - correct: "PRISMA"
+    wrong: ["Prisma", "prisma", "普里斯瑪", "Plasma"]
+    whisper_hint: true
+    note: "系統性回顧與統合分析的報告指引，非 ORM 套件。實測 ×9 全為小寫誤寫。"
+
+  - correct: "PubMed"
+    wrong: ["Pub Med", "pubmed", "PubMag", "怕不妹的"]
+    whisper_hint: true
+
+  - correct: "OpenEvidence"
+    wrong: ["Open Evidence", "open evidence", "歐盆愛維登斯"]
+
+  - correct: "NCCN"
+    wrong: ["NCCM", "NCN", "N C C N"]
+
+  - correct: "SOAP"
+    wrong: ["Soap", "soap", "所普"]
+    note: "病歷格式 Subjective/Objective/Assessment/Plan，不是肥皂。"
+
+  - correct: "ICD-10"
+    wrong: ["ICD 10", "ICD十", "I C D ten"]
+
+  # ── 血液腫瘤 ────────────────────────────────────────────
+  - correct: "TNBC"
+    wrong: ["T N B C", "TMBC", "TNPC"]
+    note: "三陰性乳癌。實測被 Whisper 拆成 'T' / ' N' / 'BC' 三段。"
+
+  - correct: "breast cancer"
+    wrong: ["Breast Cancer", "breastcancer", "不理斯特 cancer"]
+
+  - correct: "NGS"
+    wrong: ["N G S", "NDS", "MGS"]
+    note: "次世代定序 Next-Generation Sequencing。"
+
+  - correct: "HRD"
+    wrong: ["H R D", "HID", "HRV"]
+    note: "同源重組修復缺失 Homologous Recombination Deficiency。"
+
+  - correct: "PSMA-PET"
+    wrong: ["PSMA PET", "PSMAPET", "P S M A pet"]
+
+  # ── 開發工具 ────────────────────────────────────────────
+  - correct: "GitHub"
+    wrong: ["Github", "github", "吉他哈伯", "git hub"]
+    whisper_hint: true
+
+  - correct: "Git"
+    wrong: ["git", "吉特"]
+
+  - correct: "Pandoc"
+    wrong: ["PanDoc", "Pan Doc", "pandoc", "潘朵克"]
+    whisper_hint: true
+    note: "實測 ×5 全寫成 PanDoc。"
+
+  - correct: "Python"
+    wrong: ["派森", "拍森", "python", "Pythone"]
+    whisper_hint: true
+
+  - correct: "JSON"
+    wrong: ["Json", "json", "潔森"]
+
+  - correct: "Cloudflare"
+    wrong: ["Cloud Flare", "cloudflare", "克勞福雷爾"]
+
+  - correct: "TypeScript"
+    wrong: ["Type Script", "typescript", "泰普斯克里普特"]
+
+  - correct: "Excel"
+    wrong: ["excel", "艾克索"]
+
+  # ── 台灣用詞（opencc s2tw 只轉字形，詞彙層在這裡補）─────
+  - correct: "軟體"
+    wrong: ["軟件"]
+  - correct: "程式"
+    wrong: ["程序"]
+    note: "指 program。若原意是「程序/流程」則不該轉，交由潤稿 LLM 依語境判斷。"
+  - correct: "網路"
+    wrong: ["網絡"]
+  - correct: "資料庫"
+    wrong: ["數據庫"]
+  - correct: "介面"
+    wrong: ["界面"]
+  - correct: "影片"
+    wrong: ["視頻"]
+  - correct: "檔案"
+    wrong: ["文件"]
+    note: "指 file。指法律文件時不該轉，交由潤稿 LLM 判斷。"
+  - correct: "記憶體"
+    wrong: ["內存"]
+  - correct: "最佳化"
+    wrong: ["優化"]
+  - correct: "物件"
+    wrong: ["對象"]
+    note: "指 object。指「對象/目標族群」時不該轉。"
+  - correct: "型別"
+    wrong: ["類型"]
+    note: "指 type。一般語意的「類型」不該轉。"

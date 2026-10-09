@@ -1,0 +1,88 @@
+name: batch
+
+# 整個 Drive 資料夾一次消化：手動觸發，或由排程自動續跑。
+# Drive 的狀態就是待辦清單——影片旁已有 .zh-Hant.srt 的集數會被跳過，
+# 所以重跑永遠安全，排程在全部做完之後只會做一次列表就結束。
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "本輪最多處理幾集（0 = 全部）"
+        default: "0"
+      dry_run:
+        description: "只跑流程、不寫入 Drive（試術語表用）"
+        type: boolean
+        default: false
+  schedule:
+    # 每 6 小時一輪。Colab 免費層 GPU 有每日配額，用完時本輪會提前停，
+    # 下一輪自動接手；不必有人盯著。
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+
+# 全域只允許一個批次在跑：兩個批次會搶同一個 Colab 免費層 runtime，
+# 也會對同一集重複轉錄。排隊而不取消，避免把跑到一半的 GPU 工作殺掉。
+concurrency:
+  group: batch
+  cancel-in-progress: false
+
+jobs:
+  subtitles:
+    runs-on: ubuntu-latest
+    # GitHub-hosted runner 硬上限 6 小時。程式端的時間預算（--budget-min）
+    # 比這裡少約 50 分鐘，留給最後一集收尾與上傳。
+    timeout-minutes: 355
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安裝 uv 與釘選的 Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: 安裝依賴
+        run: uv sync --frozen
+
+      - name: 還原憑證
+        env:
+          GCP_ADC_JSON: ${{ secrets.GCP_ADC_JSON }}
+          GOOGLE_OAUTH_TOKEN: ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+        run: |
+          mkdir -p "$HOME/.config/gcloud" "$HOME/.config/polish-screen-record"
+          printf '%s' "$GCP_ADC_JSON" > "$HOME/.config/gcloud/application_default_credentials.json"
+          printf '%s' "$GOOGLE_OAUTH_TOKEN" > "$HOME/.config/polish-screen-record/token.json"
+          chmod 600 "$HOME/.config/gcloud/application_default_credentials.json" \
+                    "$HOME/.config/polish-screen-record/token.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gcloud/application_default_credentials.json" >> "$GITHUB_ENV"
+
+      - name: 安裝 ffmpeg
+        # 只有 Groq fallback（設了 GROQ_API_KEY 才啟用）需要，Colab VM 已預裝。
+        # 不依 secret 是否存在做條件判斷：step 的 if 讀不到自己的 env，
+        # 為了省 20 秒把邏輯搬到 job 層不划算。
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: 安裝 Colab CLI
+        # 上游宣告的是未鎖版本的 jupyter-kernel-client，而該套件 1.0.0 把
+        # KernelClient 改名，導致 CLI 一執行就 AttributeError。必須釘 0.15.0。
+        run: uv tool install --python 3.12 google-colab-cli --with "jupyter-kernel-client==0.15.0"
+
+      - name: 批次產生字幕
+        env:
+          # 資料夾 ID 放 secret 而不是寫死在這裡：這是公開 repo，而資料夾
+          # 可能是「知道連結者皆可檢視」。
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          # workflow 輸入一律走環境變數，不內插進 run: 區塊。
+          LIMIT: ${{ inputs.limit || '0' }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: uv run psr batch --limit "$LIMIT" --budget-min 300 --report report.md
+
+      - name: 回收 Colab session
+        # 縱深防禦：程式碼裡已有 try/finally，但 job 被取消或 runner 被殺時
+        # 那段不會執行。孤兒 runtime 會佔住免費層配額。
+        if: always()
+        continue-on-error: true
+        run: colab --auth adc stop -s psr || true

@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # 10 分鐘紅線：超過就沒人等，等於沒測試。純函式核心目前約 1 秒跑完，
+    # 這個上限存在是為了在有人加入慢測試時立刻發現，而不是容忍它。
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: 從零安裝依賴
+        # --frozen 確保裝的是 uv.lock 鎖定的版本。CI 證明的是「從零開始也會動」，
+        # 若允許解析器自由選版，這個證明就不成立。
+        run: uv sync --frozen
+
+      - name: 執行測試
+        run: uv run pytest -q
+
+      - name: 確認純函式核心沒有偷偷引入網路或檔案系統相依
+        # align / validate / srt / text / segment / refine 必須維持純函式，
+        # 否則就無法離線且確定性地測試——那是整個 Phase 1 的前提。
+        run: |
+          set -e
+          for m in align validate srt text segment refine; do
+            if grep -nE "^\s*(import|from)\s+(requests|httpx|urllib|socket|aiohttp|openai|groq|googleapiclient)" \
+                 "src/psr/$m.py"; then
+              echo "::error file=src/psr/$m.py::純函式模組不得引入網路相依"
+              exit 1
+            fi
+          done
+          echo "✓ 純函式核心乾淨"

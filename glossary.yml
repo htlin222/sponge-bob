@@ -1,0 +1,59 @@
+# 術語表 — 海綿寶寶台灣配音版
+#
+#   Whisper 的 prompt 參數（上限僅 224 tokens）→ 只取 whisper_hint: true 的 correct 詞，
+#                                                依本檔順序貪婪填充，不做智慧排序
+#
+# 收錄原則：只放**資料夾裡的集名實際出現過**、或台灣配音版確定的譯名。
+# 不確定的譯名寧可不放——寫錯的 hint 會把 Whisper 往錯的方向推。
+#
+# wrong 欄位刻意留空：它記錄的是「實際發生過的錯誤轉錄」，不是想像的。
+# 第一輪實跑後，從 _psr/*.raw.srt 統計誤聽再補上。
+#
+# 順序 = 優先序：越常出現的角色越前面，prompt 超過上限時從尾端截掉。
+
+version: 1
+
+terms:
+  # ── 主要角色 ────────────────────────────────────────────
+  - correct: "海綿寶寶"
+    whisper_hint: true
+  - correct: "派大星"
+    whisper_hint: true
+  - correct: "章魚哥"
+    whisper_hint: true
+  - correct: "蟹老闆"
+    whisper_hint: true
+  - correct: "珊迪"
+    whisper_hint: true
+  - correct: "皮老闆"
+    whisper_hint: true
+    note: "Plankton。集名多次出現（皮老闆稱王、皮老闆退休去…）。"
+  - correct: "小蝸"
+    whisper_hint: true
+    note: "Gary。集名：小蝸長腳腳、小蝸與點點。"
+  - correct: "泡芙阿姨"
+    whisper_hint: true
+    note: "Mrs. Puff，駕訓班老師。"
+  - correct: "珍珍"
+    whisper_hint: true
+    note: "Pearl，蟹老闆的女兒。集名：珍珍的生日禮物。"
+  - correct: "凱倫"
+    whisper_hint: true
+    note: "Karen，皮老闆的電腦老婆。集名：凱倫的寶寶、凱倫愛點點。"
+
+  # ── 地點與物品 ──────────────────────────────────────────
+  - correct: "比奇堡"
+    whisper_hint: true
+    note: "Bikini Bottom。集名：比奇堡歷史博物館、怪怪比奇堡。"
+  - correct: "蟹堡王"
+    whisper_hint: true
+    note: "Krusty Krab。"
+  - correct: "美味蟹堡"
+    whisper_hint: true
+    note: "Krabby Patty。集名：美味蟹堡叫賣記。"
+  - correct: "海霸糊"
+    whisper_hint: true
+    note: "集名：我愛海霸糊、海霸糊糊大頭目。"
+  - correct: "水母田"
+    whisper_hint: true
+    note: "集名：黃蜂水母田之爭。"
