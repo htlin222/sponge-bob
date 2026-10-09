@@ -23,7 +23,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 
-from psr import drive, glossary as glossary_mod, manifest as manifest_mod
+from psr import cleanup, drive, glossary as glossary_mod, manifest as manifest_mod
 from psr.asr.colab import ColabSession, ColabUnavailable
 from psr.cli import ASR_STAGE_VERSION, PUNCTUATE_STAGE_VERSION, _build_cues, _punctuate
 from psr import punctuate as punct_mod
@@ -173,11 +173,16 @@ def process_episode(ep: Episode, *, service, transcriber, gloss, llm,
                     json.dumps(words_raw, ensure_ascii=False))
             _upload(service, names["manifest"], work_folder_id, work, man.to_json())
 
+        # 清理只作用在送去加標點的文字上；words.json 與 raw.srt 保留原始轉錄，
+        # 之後統計誤聽、補術語表要看的正是它們。
+        clean, dropped = cleanup.drop_hallucinations(words, list(gloss.hallucinations))
+        clean, corrected = cleanup.apply_corrections(clean, gloss.corrections())
+
         man.stage_keys["punctuate"] = manifest_mod.stage_key(
             "punctuate", PUNCTUATE_STAGE_VERSION,
             [man.stage_keys["asr"], gloss.content_hash()], {"model": punct_mod.MODEL})
-        punctuated, failed, total_chunks, ptok, ctok = _punctuate(words, llm)
-        cues = _build_cues(words, punctuated, audio_duration)
+        punctuated, failed, total_chunks, ptok, ctok = _punctuate(clean, llm)
+        cues = _build_cues(clean, punctuated, audio_duration)
 
         man.degraded_window_count = len(failed)
         man.cost = round(ptok / 1e6 * 0.14 + ctok / 1e6 * 0.28, 4)
@@ -195,7 +200,8 @@ def process_episode(ep: Episode, *, service, transcriber, gloss, llm,
         "stem": ep.stem, "status": "ok", "engine": engine,
         "minutes": audio_duration / 60, "cues": len(cues),
         "failed_chunks": f"{len(failed)}/{total_chunks}",
-        "coverage": coverage(words, cues), "violations": len(violations),
+        "coverage": coverage(clean, cues), "violations": len(violations),
+        "dropped": dropped, "corrected": corrected,
         "cost": man.cost, "seconds": man.timings["total"],
         "preview": "\n".join(srt_text.split("\n\n")[:6]) if dry_run else "",
     }
@@ -214,11 +220,11 @@ def _report(results, pending_total, remaining, stop_reason, dry_run) -> str:
     if stop_reason:
         lines.append(f"- 提前停止：{stop_reason}")
     if ok:
-        lines += ["", "| 集數 | 引擎 | 分鐘 | 字幕 | 標點失敗 | 覆蓋率 | 違規 | 秒 |",
-                  "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
+        lines += ["", "| 集數 | 引擎 | 分鐘 | 字幕 | 標點失敗 | 覆蓋率 | 違規 | 幻覺刪除 | 名稱修正 | 秒 |",
+                  "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
         lines += [f"| {r['stem']} | {r['engine']} | {r['minutes']:.1f} | {r['cues']} | "
                   f"{r['failed_chunks']} | {r['coverage'] * 100:.1f}% | {r['violations']} | "
-                  f"{r['seconds']:.0f} |" for r in ok]
+                  f"{r['dropped']} | {r['corrected']} | {r['seconds']:.0f} |" for r in ok]
     if bad:
         lines += ["", "失敗："] + [f"- {r['stem']}：{r['error']}" for r in bad]
     previews = [r for r in ok if r["preview"]]
