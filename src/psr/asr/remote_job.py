@@ -66,6 +66,40 @@ def probe_duration(path):
     return float(out.stdout.strip())
 
 
+def preload_cuda12_libs():
+    """讓 CUDA 12 版的 ctranslate2 在 CUDA 13 的 Colab 上找得到 cuBLAS/cuDNN。
+
+    2026-10 起 Colab 是 torch cu130，系統上只剩 libcublas.so.13；PyPI 上的
+    ctranslate2（faster-whisper 的後端）仍是 CUDA 12 build，encode 時才
+    dlopen libcublas.so.12，於是 RuntimeError。裝上 cu12 的 wheel 並以
+    RTLD_GLOBAL 預先載入——之後的 dlopen 依 soname 命中已載入的庫，不需要
+    LD_LIBRARY_PATH（kernel 已啟動，改環境變數不會生效）。
+
+    cuDNN 各子庫彼此相依，載入順序不固定，所以失敗的留到下一輪再試。
+    """
+    import ctypes
+    import glob
+
+    pip("nvidia-cublas-cu12", "nvidia-cudnn-cu12==9.*")
+    import nvidia.cublas
+    import nvidia.cudnn
+
+    pending = []
+    for pkg in (nvidia.cublas, nvidia.cudnn):
+        pending += sorted(glob.glob(os.path.join(list(pkg.__path__)[0], "lib", "lib*.so*")))
+    for _ in range(5):
+        failed = []
+        for lib in pending:
+            try:
+                ctypes.CDLL(lib, mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                failed.append(lib)
+        if not failed:
+            return
+        pending = failed
+    raise RuntimeError(f"無法載入 CUDA 12 函式庫：{[os.path.basename(x) for x in pending]}")
+
+
 def load_model(model_size="large-v3"):
     """批次模式下同一個 kernel 會連續執行本檔數十次，模型掛在 builtins 上
     跨 exec 保留——每集重新載入 large-v3 要多花 30–60 秒。若 CLI 的 exec
@@ -76,6 +110,7 @@ def load_model(model_size="large-v3"):
     if cached is not None and cached[0] == model_size:
         return cached[1]
     pip("faster-whisper==1.2.0")
+    preload_cuda12_libs()
     from faster_whisper import WhisperModel
 
     model = WhisperModel(model_size, device="cuda", compute_type="float16")
