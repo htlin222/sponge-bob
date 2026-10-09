@@ -77,6 +77,21 @@ SCHEMA = [
         facet TEXT NOT NULL,
         name TEXT NOT NULL,
         reason TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS srt_fixes (
+        stem TEXT PRIMARY KEY,
+        md5_before TEXT NOT NULL,
+        md5_after TEXT NOT NULL,
+        fix_version TEXT NOT NULL,
+        applied INTEGER NOT NULL,
+        skipped INTEGER NOT NULL,
+        fixed_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS fix_log (
+        stem TEXT NOT NULL,
+        cue_idx INTEGER NOT NULL,
+        heard TEXT NOT NULL,
+        fixed TEXT NOT NULL,
+        applied INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS fix_log_stem ON fix_log(stem)",
     "CREATE INDEX IF NOT EXISTS quotes_episode ON quotes(episode_id)",
     "CREATE INDEX IF NOT EXISTS quote_tags_tag ON quote_tags(tag_id)",
     "CREATE INDEX IF NOT EXISTS audit_episode ON audit_issues(episode_id)",
@@ -235,6 +250,30 @@ def write_episode(db, meta: EpisodeMeta, *, drive_id: str, srt_md5: str, version
                (stem, i.cue, i.type, i.detail, i.suggestion)) for i in result.issues]
     stmts += [(f"INSERT INTO tag_suggestions (episode_id, facet, name, reason) VALUES ({_EPISODE_ID}, ?, ?, ?)",
                (stem, facet, name, reason)) for facet, name, reason in result.new_tags]
+    db.transaction(stmts)
+
+
+def fix_state(db) -> dict[str, tuple[str, str]]:
+    """stem → (修正後 md5, fix 版本)。Drive 上的 md5 等於修正後 md5 代表檔案仍是我們的輸出。"""
+    return {stem: (md5, ver) for stem, md5, ver in
+            db.execute("SELECT stem, md5_after, fix_version FROM srt_fixes")}
+
+
+def record_fix(db, stem: str, *, md5_before: str, md5_after: str, version: str,
+               applied: list, skipped: list) -> None:
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    stmts = [
+        ("""INSERT INTO srt_fixes (stem, md5_before, md5_after, fix_version, applied, skipped, fixed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (stem) DO UPDATE SET md5_before = excluded.md5_before,
+                md5_after = excluded.md5_after, fix_version = excluded.fix_version,
+                applied = excluded.applied, skipped = excluded.skipped, fixed_at = excluded.fixed_at""",
+         (stem, md5_before, md5_after, version, len(applied), len(skipped), now)),
+        ("DELETE FROM fix_log WHERE stem = ?", (stem,)),
+    ]
+    stmts += [("INSERT INTO fix_log (stem, cue_idx, heard, fixed, applied) VALUES (?, ?, ?, ?, ?)",
+               (stem, f.cue if isinstance(f.cue, int) else -1, f.wrong, f.right, flag))
+              for flag, fixes in ((1, applied), (0, skipped)) for f in fixes]
     db.transaction(stmts)
 
 
