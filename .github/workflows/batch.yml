@@ -14,8 +14,8 @@ on:
         type: boolean
         default: false
   schedule:
-    # 每 6 小時一輪。Colab 免費層 GPU 有每日配額，用完時本輪會提前停，
-    # 下一輪自動接手；不必有人盯著。
+    # 每 6 小時一輪（UTC 第 17 分，避開整點排程尖峰）。Colab 免費層 GPU 有
+    # 每日配額，用完時本輪會提前停，下一輪自動接手；不必有人盯著。
     - cron: "17 */6 * * *"
 
 permissions:
