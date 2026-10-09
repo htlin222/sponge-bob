@@ -30,7 +30,7 @@ from psr.validate import validate
 from psr.youtube import drive_paths, slugify
 
 TOKEN_PATH = pathlib.Path.home() / ".config/polish-screen-record/token.json"
-ASR_STAGE_VERSION = "1"
+ASR_STAGE_VERSION = "2"  # 2：關閉 VAD（見 asr/remote_job.py）
 PUNCTUATE_STAGE_VERSION = "1"
 
 
