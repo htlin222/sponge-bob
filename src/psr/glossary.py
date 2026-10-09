@@ -67,6 +67,8 @@ class Glossary:
 
     entries: tuple[GlossaryEntry, ...]
     raw_bytes: bytes
+    # 已知的 Whisper 幻覺字句（片尾浮水印等），由 psr.cleanup 移除。
+    hallucinations: tuple[str, ...] = ()
 
     def whisper_prompt(self) -> str:
         """組出 Whisper prompt 參數用的字串。
@@ -99,6 +101,10 @@ class Glossary:
         ]
         return "；".join(parts)
 
+    def corrections(self) -> list[tuple[str, str]]:
+        """(誤聽, 正字) 對照，依檔案順序。等長與否由 psr.cleanup 判斷。"""
+        return [(w, e.correct) for e in self.entries for w in e.wrong]
+
     def content_hash(self) -> str:
         """glossary.yml 原始位元組的 sha256，供 pipeline stage key 使用。"""
         return hashlib.sha256(self.raw_bytes).hexdigest()
@@ -118,4 +124,5 @@ def load(path: str | Path) -> Glossary:
         )
         for t in terms
     )
-    return Glossary(entries=entries, raw_bytes=raw_bytes)
+    return Glossary(entries=entries, raw_bytes=raw_bytes,
+                    hallucinations=tuple(data.get("hallucinations") or ()))

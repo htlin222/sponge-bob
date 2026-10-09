@@ -31,7 +31,7 @@ from psr.youtube import drive_paths, slugify
 
 TOKEN_PATH = pathlib.Path.home() / ".config/polish-screen-record/token.json"
 ASR_STAGE_VERSION = "2"  # 2：關閉 VAD（見 asr/remote_job.py）
-PUNCTUATE_STAGE_VERSION = "1"
+PUNCTUATE_STAGE_VERSION = "2"  # 2：加標點前先做 psr.cleanup
 
 
 def _youtube_title(video_id: str) -> str:

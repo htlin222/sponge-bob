@@ -13,6 +13,12 @@
 
 version: 1
 
+# 已知的 Whisper 幻覺字句：轉錄後、加標點前整段刪除（psr/cleanup.py）。
+# 比對會折疊繁簡、大小寫、空白與標點。同樣只收實測看過的。
+hallucinations:
+  - "優優獨播劇場"                       # S01E01 片尾，實測
+  - "YoYo Television Series Exclusive"  # S01E01 片尾，實測
+
 terms:
   # ── 主要角色 ────────────────────────────────────────────
   - correct: "海綿寶寶"
