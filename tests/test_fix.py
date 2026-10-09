@@ -40,3 +40,11 @@ def test_length_change_over_two_is_blocked():
 
 def test_sound_similarity_is_one_for_pure_homophones():
     assert sound_similarity("素食", "速食") == 1.0
+
+
+def test_traditionalize_converts_leftover_simplified_without_touching_timing():
+    from psr.fix import traditionalize
+    cues = [Cue(7, 1.0, 2.0, "醒醒孩子你在烧我的钱"), Cue(8, 2.0, 3.0, "蟹老闆")]
+    out = traditionalize(cues)
+    assert [c.text for c in out] == ["醒醒孩子你在燒我的錢", "蟹老闆"]
+    assert [(c.index, c.start, c.end) for c in out] == [(7, 1.0, 2.0), (8, 2.0, 3.0)]

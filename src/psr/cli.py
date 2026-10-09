@@ -26,6 +26,7 @@ from psr.refine import absorb_fragments, enforce_duration, wrap_lines
 from psr.timeline import build_cues, coverage
 from psr.segment import raw_segment
 from psr.srt import render
+from psr.text import to_traditional
 from psr.validate import validate
 from psr.youtube import drive_paths, slugify
 
@@ -61,14 +62,15 @@ def _resolve_target(service, source):
 
 def _punctuate(words, client, executor_workers=6):
     """第一階段：替原文加標點。失敗的塊退回原文——沒有標點的字幕仍然可讀，
-    內容被竄改的字幕不行。"""
+    內容被竄改的字幕不行。退回的原文同樣要繁化：Whisper 常吐簡體，成功的塊
+    在 punctuate_chunk 裡繁化過，失敗的塊若直接沿用，字幕會整段變成簡體。"""
     from concurrent.futures import ThreadPoolExecutor
 
     chunks = punct_mod.make_chunks(words)
     with ThreadPoolExecutor(max_workers=executor_workers) as pool:
         results = list(pool.map(lambda c: punct_mod.punctuate_chunk(c, client), chunks))
 
-    text = "".join(out if out else chunks[i] for i, (out, _, _, _) in enumerate(results))
+    text = "".join(out if out else to_traditional(chunks[i]) for i, (out, _, _, _) in enumerate(results))
     failed = [i for i, (out, _, _, _) in enumerate(results) if out is None]
     prompt_tokens = sum(r[1] for r in results)
     completion_tokens = sum(r[2] for r in results)
