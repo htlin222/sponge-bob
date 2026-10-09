@@ -147,7 +147,13 @@ def transcribe(audio, prompt, model_size="large-v3"):
                                            # 不合格時自動重試 0.2/0.4/0.6…
         condition_on_previous_text=False,  # 切斷前文影響：阻止幻覺迴圈擴散、
                                            # 錯誤不滾雪球，也讓切塊與整檔結果可比較
-        vad_filter=True,
+        # 卡通不開 VAD：Silero VAD 把配樂與音效底下的角色對白大量判成非語音。
+        # 2026-10-09 S01E01 實測：VAD 開 1022 字、整段 9–13 分鐘全空；關掉
+        # 2481 字，被救回的段落逐句核對都是真實對白而非幻覺。調低門檻
+        # （0.2 → 1457 字、0.05 → 1942 字）都救不完整。
+        # condition_on_previous_text=False 已阻止幻覺迴圈擴散，所以關 VAD
+        # 的主要風險（靜音段幻覺）被限制在單一 30 秒窗內。
+        vad_filter=False,
         word_timestamps=True,
     )
     words = []

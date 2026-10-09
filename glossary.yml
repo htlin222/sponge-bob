@@ -6,8 +6,8 @@
 # 收錄原則：只放**資料夾裡的集名實際出現過**、或台灣配音版確定的譯名。
 # 不確定的譯名寧可不放——寫錯的 hint 會把 Whisper 往錯的方向推。
 #
-# wrong 欄位刻意留空：它記錄的是「實際發生過的錯誤轉錄」，不是想像的。
-# 第一輪實跑後，從 _psr/*.raw.srt 統計誤聽再補上。
+# wrong 欄位只記錄「實際發生過的錯誤轉錄」，不是想像的。空著代表還沒觀察到。
+# 之後從 _psr/*.raw.srt 統計誤聽再補上。
 #
 # 順序 = 優先序：越常出現的角色越前面，prompt 超過上限時從尾端截掉。
 
@@ -20,7 +20,9 @@ terms:
   - correct: "派大星"
     whisper_hint: true
   - correct: "章魚哥"
+    wrong: ["張宇哥", "鄭宇哥"]
     whisper_hint: true
+    note: "S01E01 實測：即使 prompt 有「章魚哥」，Whisper 仍聽成張宇哥／郑宇哥。"
   - correct: "蟹老闆"
     whisper_hint: true
   - correct: "珊迪"
