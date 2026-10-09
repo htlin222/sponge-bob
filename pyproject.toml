@@ -9,12 +9,14 @@ dependencies = [
     "groq>=1.6.0",
     "openai>=3.1.0",
     "opencc-python-reimplemented>=0.1.7",
+    "pypinyin>=0.55.0",
     "pyyaml>=6.0.3",
     "zhconv>=1.4.3",
 ]
 
 [project.scripts]
 psr = "psr.cli:main"
+bob = "psr.bob:main"
 
 [dependency-groups]
 dev = [

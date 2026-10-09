@@ -91,6 +91,24 @@ OAuth 同意畫面停在 **測試中** 時，Google 發的 refresh token **7 天
 
 之後只有在 token 被撤銷或換帳號時才需要重做第 3、4 步。
 
+## 金句庫 `bob`
+
+把字幕變成「生活大小事都能引用」的海綿寶寶金句庫。**在本機跑**：模型走 `claude -p --model haiku`（訂閱額度），資料存在 Turso（台詞有版權，不進公開 repo）。
+
+```bash
+uv run bob fix              # 照語音修正誤聽，改寫 Drive 上的字幕（原檔備份為 _psr/<集名>.asr.srt）
+uv run bob index            # 標記已修正、尚未標記或內容已變的字幕（--limit、--workers）
+uv run bob ask "週一不想上班"  # 描述處境 → 推薦台詞、集數與時間碼（-v 顯示搜尋條件）
+uv run bob audit            # 字幕錯字/人名/幻覺統計、Haiku 提的新標籤
+```
+
+- **修正只修「聽錯的字」**：Haiku 提出 `{編號, 錯字, 正字}`，程式檢查錯字確實出現在該條字幕、長度差 ≤ 2、前後拼音相似度 ≥ 0.55 才套用（謝老闆→蟹老闆 1.0 放行；把「我做不得白大姨」猜成「派大星」0.42 擋下）。cue 時間不動。每次都從原始備份重修，所以改 prompt（`fix.FIX_VERSION`）重跑不會越修越歪；pipeline 重做的字幕（md5 對不上）視為新的原始版本。
+- **Haiku 只回字幕編號，不回台詞**。金句文字依編號從 SRT 切出，資料庫裡的每個字都是字幕上真有的。
+- 標籤是封閉的 `taxonomy.yml`（情境、情緒、語氣用途、角色），JSON schema 以 enum 強制；Haiku 覺得不夠時寫進 `tag_suggestions`，人工決定要不要加。
+- 好引用程度 1–5，2 分以下不存。改 prompt（`quotes.PROMPT_VERSION`）或分類表會改變 index 版本，下次 `bob index` 整批重標；字幕重做（md5 改變）的集數也會自動重標。
+- 搜尋：先讓模型把處境轉成標籤＋關鍵字，SQL 以「標籤命中 2 分、台詞命中 3 分、情境命中 2 分」取前 30 筆，再讓模型挑 1–5 段。
+- 連線設定：`~/.config/sponge-bob/turso.json`（`{"url","token"}`）或 `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`；`--db 檔案.sqlite` 改用本機 SQLite。
+
 ## 已知限制
 
 - 加標點階段**不改字**。角色名誤聽靠 `glossary.yml` 的 `wrong` 在加標點前逐字修正（只接受與正字等長的對照，時間軸不動）；片尾浮水印類幻覺靠 `hallucinations` 清單刪除。兩者都只收實測看過的，從 `_psr/*.raw.srt` 統計後再補。
