@@ -54,18 +54,19 @@ def _write(service, name: str, folder_id: str, text: str) -> str:
     return _md5(text)
 
 
-def _fix_episode(text: str, terms: list[str], model: str):
-    cues = fix.traditionalize(parse(text))
-    raw = claude_cli.ask(fix.user_prompt(cues), system=fix.system_prompt(terms),
+def _fix_episode(text: str, gloss: glossary.Glossary, model: str):
+    cues, known = fix.apply_glossary(fix.traditionalize(parse(text)), gloss.corrections())
+    raw = claude_cli.ask(fix.user_prompt(cues), system=fix.system_prompt([e.correct for e in gloss.entries]),
                          schema=fix.SCHEMA, model=model)
-    return fix.apply_fixes(cues, raw.get("fixes", []))
+    cues, applied, skipped = fix.apply_fixes(cues, raw.get("fixes", []))
+    return cues, known + applied, skipped
 
 
 def cmd_fix(args) -> int:
     db = quotedb.connect(args.db)
     quotedb.init(db, quotes.load_taxonomy(TAXONOMY_PATH))
     state = quotedb.fix_state(db)
-    terms = [t.correct for t in glossary.load(GLOSSARY_PATH).entries]
+    gloss = glossary.load(GLOSSARY_PATH)
     service, files, work_id = _drive_srts(args.folder)
     if not work_id:
         print(f"找不到 {WORK_SUBFOLDER}/ 子資料夾，無處備份原始字幕。", file=sys.stderr)
@@ -94,7 +95,7 @@ def cmd_fix(args) -> int:
 
     failures = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(_fix_episode, source, terms, args.model): (f, stem, current, source, fresh)
+        futures = {pool.submit(_fix_episode, source, gloss, args.model): (f, stem, current, source, fresh)
                    for f, stem, current, source, fresh in jobs}
         for n, fut in enumerate(as_completed(futures), 1):
             f, stem, current, source, fresh = futures[fut]

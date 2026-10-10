@@ -20,7 +20,7 @@ from pypinyin import lazy_pinyin
 from psr.models import Cue
 from psr.text import to_traditional
 
-FIX_VERSION = "2"  # 2：先把殘留的簡體字形轉繁（加標點失敗的塊漏了繁化）
+FIX_VERSION = "3"  # 2：先轉繁（加標點失敗的塊漏了繁化）；3：先套 glossary 的 wrong 對照
 # 由實測誤聽校準：佳音哥→章魚哥 0.57 要放行，我做不得白大姨→派大星 0.42 要擋。
 SOUND_THRESHOLD = 0.55
 MAX_LENGTH_CHANGE = 2
@@ -74,6 +74,27 @@ class Fix:
 def traditionalize(cues: list[Cue]) -> list[Cue]:
     """確定性地把字形統一成台灣繁體（s2tw），補救 pipeline 漏掉繁化的字幕。"""
     return [replace(c, text=to_traditional(c.text)) for c in cues]
+
+
+def apply_glossary(cues: list[Cue], pairs: list[tuple[str, str]]) -> tuple[list[Cue], list[Fix]]:
+    """把 glossary 的 (誤聽, 正字) 確定性地套到每條字幕，回傳 (新字幕, 修正紀錄)。
+
+    Haiku 逐集判斷，同一個錯字常常這集修、那集漏；反覆出現的誤聽改由對照表統一處理。
+    長的先換，「美味謝寶」才不會先被「謝寶」吃掉一半。時間不變，也不受拼音門檻限制——
+    對照表是人工審過的。
+    """
+    ordered = sorted(pairs, key=lambda p: len(p[0]), reverse=True)
+    out: list[Cue] = []
+    applied: list[Fix] = []
+    for c in cues:
+        text = c.text
+        for wrong, right in ordered:
+            n = text.count(wrong)
+            if n:
+                text = text.replace(wrong, right)
+                applied.extend([Fix(c.index, wrong, right)] * n)
+        out.append(replace(c, text=text))
+    return out, applied
 
 
 def apply_fixes(cues: list[Cue], proposals: list[dict]) -> tuple[list[Cue], list[Fix], list[Fix]]:

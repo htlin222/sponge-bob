@@ -22,24 +22,31 @@ hallucinations:
 terms:
   # ── 主要角色 ────────────────────────────────────────────
   - correct: "海綿寶寶"
+    wrong: ["海面寶寶", "海邊寶寶", "海明寶寶", "海鳴寶寶", "還沒寶寶", "愛面寶寶", "海年寶寶", "海天寶寶", "海鮮寶寶", "河邊寶寶"]
     whisper_hint: true
   - correct: "派大星"
+    wrong: ["派大西", "派達西", "拍大戲", "拍大星", "潘大西", "白大西", "派大仙", "海大星", "潘大星", "拍打星", "排大星", "太大星", "派大席", "白大星", "海大西", "派達星", "派泰西", "拍大西", "排大西", "泰大星", "潘大仙", "白大仙", "派太西", "白太心", "拍大吉", "拍大機", "潘太心"]
     whisper_hint: true
   - correct: "章魚哥"
-    wrong: ["張宇哥", "鄭宇哥"]
+    wrong: ["張宇哥", "鄭宇哥", "張雲哥", "張一哥", "江玉哥", "趙宇哥", "家瑜哥", "江宇哥", "嘉宇哥", "張愚哥", "張獄哥", "焦魚哥", "鯊魚哥"]
     whisper_hint: true
     note: "S01E01 實測：即使 prompt 有「章魚哥」，Whisper 仍聽成張宇哥／郑宇哥。"
   - correct: "蟹老闆"
+    wrong: ["謝老闆", "借老闆", "縣老闆"]
     whisper_hint: true
   - correct: "珊迪"
+    wrong: ["山迪", "山底", "沙迪", "閃迪", "陳迪", "山弟"]
     whisper_hint: true
   - correct: "皮老闆"
+    wrong: ["平老闆", "比老闆", "畢老闆", "貧老闆"]
     whisper_hint: true
     note: "Plankton。集名多次出現（皮老闆稱王、皮老闆退休去…）。"
   - correct: "小蝸"
+    wrong: ["小瓜"]
     whisper_hint: true
     note: "Gary。集名：小蝸長腳腳、小蝸與點點。"
   - correct: "泡芙阿姨"
+    wrong: ["泡泡阿姨", "胖子阿姨", "胖夫阿姨", "報復阿姨", "豹夫阿姨"]
     whisper_hint: true
     note: "Mrs. Puff，駕訓班老師。"
   - correct: "珍珍"
@@ -51,17 +58,70 @@ terms:
 
   # ── 地點與物品 ──────────────────────────────────────────
   - correct: "比奇堡"
+    wrong: ["比奇寶", "比起寶", "筆記寶", "比琴堡", "比吉寶", "碧琪寶", "碧琪堡", "李奇保"]
     whisper_hint: true
     note: "Bikini Bottom。集名：比奇堡歷史博物館、怪怪比奇堡。"
   - correct: "蟹堡王"
+    wrong: ["謝寶王", "蟹寶王", "謝霸王", "謝保王", "蟹保王", "線寶王", "蟹飽王"]
     whisper_hint: true
     note: "Krusty Krab。"
   - correct: "美味蟹堡"
+    wrong: ["美味蟹寶", "美味謝寶", "美味蟹飽", "美味蟹包", "美味線寶", "美味蟹煲", "美味蟹保", "美味蟹毛", "美味餡包", "美味餡飽"]
     whisper_hint: true
     note: "Krabby Patty。集名：美味蟹堡叫賣記。"
   - correct: "海霸糊"
+    wrong: ["海霸虎", "海霸壺", "海霸湖", "海巴虎", "海巴狐"]
     whisper_hint: true
     note: "集名：我愛海霸糊、海霸糊糊大頭目。"
   - correct: "水母田"
+    wrong: ["水母天"]
     whisper_hint: true
     note: "集名：黃蜂水母田之爭。"
+
+  # ── 只用來修正、不放進 Whisper prompt 的詞 ─────────────────
+  # wrong 取自 `bob audit` 統計：Haiku 在 ≥3 處、跨集數都做過同樣的修正，
+  # 且不是常見的正常詞（「山頂」「真真」「外匯」這類會誤傷，刻意不收）。
+  - correct: "老蟹"
+    wrong: ["老謝"]
+  - correct: "蟹堡"
+    wrong: ["蟹寶", "謝寶", "蟹飽", "蟹煲", "蟹包", "線寶", "謝保", "線保", "蟹保"]
+  - correct: "祖傳秘方"
+    wrong: ["祖傳蜜蜂"]
+  - correct: "海超人"
+    wrong: ["海潮人", "海昭人", "海昌人"]
+  - correct: "駕訓班"
+    wrong: ["駕馴班"]
+  - correct: "幸運籤餅"
+    wrong: ["幸運鉛餅"]
+  - correct: "煎臺"
+    wrong: ["尖臺", "肩臺"]
+  - correct: "大鳳梨裡"
+    wrong: ["大風裡裡", "大光麗麗"]
+  - correct: "得來速"
+    wrong: ["德萊素"]
+  - correct: "塔塔醬"
+    wrong: ["塔塔將"]
+  - correct: "豆奶昔"
+    wrong: ["豆奶席"]
+  - correct: "外燴師"
+    wrong: ["外匯師"]
+  - correct: "瓶中船"
+    wrong: ["平中船"]
+  - correct: "海膽伯"
+    wrong: ["海膽博"]
+  - correct: "蝦爸"
+    wrong: ["瞎爸"]
+  - correct: "珊瑚營"
+    wrong: ["珊瑚銀"]
+  - correct: "猛男俱樂部"
+    wrong: ["某男俱樂部"]
+  - correct: "海螺"
+    wrong: ["海羅"]
+  - correct: "胡桃珊迪"
+    wrong: ["胡桃山敵"]
+  - correct: "小章章"
+    wrong: ["小張張"]
+  - correct: "幻燈片"
+    wrong: ["換燈片"]
+  - correct: "魔鉤"
+    wrong: ["魔溝"]

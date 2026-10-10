@@ -1,4 +1,4 @@
-from psr.fix import apply_fixes, sound_similarity
+from psr.fix import apply_fixes, apply_glossary, sound_similarity
 from psr.models import Cue
 
 CUES = [Cue(1, 0.0, 1.5, "謝老闆，老闆，快點"), Cue(2, 1.5, 3.0, "我們可以變成好媽雞"),
@@ -48,3 +48,17 @@ def test_traditionalize_converts_leftover_simplified_without_touching_timing():
     out = traditionalize(cues)
     assert [c.text for c in out] == ["醒醒孩子你在燒我的錢", "蟹老闆"]
     assert [(c.index, c.start, c.end) for c in out] == [(7, 1.0, 2.0), (8, 2.0, 3.0)]
+
+
+def test_glossary_pairs_apply_longest_first_and_keep_timing():
+    cues = [Cue(1, 0.0, 1.0, "美味謝寶跟謝寶王"), Cue(2, 1.0, 2.0, "派大西，派大西")]
+    pairs = [("謝寶", "蟹堡"), ("美味謝寶", "美味蟹堡"), ("謝寶王", "蟹堡王"), ("派大西", "派大星")]
+    fixed, applied = apply_glossary(cues, pairs)
+    assert [c.text for c in fixed] == ["美味蟹堡跟蟹堡王", "派大星，派大星"]
+    assert [(c.index, c.start, c.end) for c in fixed] == [(1, 0.0, 1.0), (2, 1.0, 2.0)]
+    assert sorted((f.cue, f.wrong) for f in applied) == [(1, "美味謝寶"), (1, "謝寶王"), (2, "派大西"), (2, "派大西")]
+
+
+def test_glossary_leaves_cues_without_matches_untouched():
+    fixed, applied = apply_glossary(CUES[1:2], [("派大西", "派大星")])
+    assert fixed == CUES[1:2] and applied == []
