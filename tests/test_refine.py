@@ -199,3 +199,38 @@ def test_split_refuses_when_a_half_would_be_an_unreadable_fragment():
     from psr.text import display_width
     assert all(display_width(c.text.strip()) >= 2 for c in out), \
         f"切出了碎片：{[c.text for c in out]}"
+
+
+def test_fragment_after_sentence_end_joins_the_next_sentence():
+    # 「為什麼？」之後的「海」是下一句的開頭，不該黏在問號後面。
+    from psr.refine import absorb_fragments
+    cues = [Cue(1, 0.0, 1.0, "為什麼？"), Cue(2, 1.2, 1.4, "海"), Cue(3, 1.5, 3.0, "綿寶寶在哪裡？")]
+    out = absorb_fragments(cues)
+    assert [c.text for c in out] == ["為什麼？", "海綿寶寶在哪裡？"]
+    assert (out[1].start, out[1].end) == (1.2, 3.0)
+
+
+def test_fragment_after_sentence_end_stays_back_when_next_is_far():
+    from psr.refine import absorb_fragments
+    cues = [Cue(1, 0.0, 1.0, "為什麼？"), Cue(2, 1.2, 1.4, "海"), Cue(3, 5.0, 6.0, "後來的事。")]
+    out = absorb_fragments(cues)
+    assert [c.text for c in out] == ["為什麼？海", "後來的事。"]
+
+
+def test_fragment_mid_sentence_still_joins_previous():
+    from psr.refine import absorb_fragments
+    cues = [Cue(1, 0.0, 1.0, "我們一起去吃"), Cue(2, 1.0, 1.2, "飯"), Cue(3, 1.3, 2.0, "好不好？")]
+    assert [c.text for c in absorb_fragments(cues)] == ["我們一起去吃飯", "好不好？"]
+
+
+def test_wrap_without_punctuation_breaks_between_words():
+    import jieba
+    from psr.refine import wrap_lines
+    text = "我們明天一定會去海邊玩然後晚上一起吃美味的晚餐"
+    out = wrap_lines([Cue(1, 0.0, 4.0, text)])[0].text
+    left = out.split("\n")[0]
+    bounds, pos = set(), 0
+    for token in jieba.cut(text):
+        pos += len(token)
+        bounds.add(pos)
+    assert out.replace("\n", "") == text and len(left) in bounds

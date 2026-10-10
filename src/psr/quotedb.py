@@ -85,6 +85,14 @@ SCHEMA = [
         applied INTEGER NOT NULL,
         skipped INTEGER NOT NULL,
         fixed_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS resegments (
+        stem TEXT PRIMARY KEY,
+        version TEXT NOT NULL,
+        md5 TEXT NOT NULL,
+        cues INTEGER NOT NULL,
+        failed_chunks INTEGER NOT NULL,
+        violations INTEGER NOT NULL,
+        done_at TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS fix_log (
         stem TEXT NOT NULL,
         cue_idx INTEGER NOT NULL,
@@ -278,6 +286,22 @@ def fix_state(db) -> dict[str, tuple[str, str]]:
     """stem → (修正後 md5, fix 版本)。Drive 上的 md5 等於修正後 md5 代表檔案仍是我們的輸出。"""
     return {stem: (md5, ver) for stem, md5, ver in
             db.execute("SELECT stem, md5_after, fix_version FROM srt_fixes")}
+
+
+def reseg_state(db) -> dict[str, str]:
+    """stem → 重新斷句的版本。"""
+    return dict(db.execute("SELECT stem, version FROM resegments"))
+
+
+def record_reseg(db, stem: str, *, version: str, md5: str, cues: int, failed_chunks: int,
+                 violations: int) -> None:
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    db.transaction([("""INSERT INTO resegments (stem, version, md5, cues, failed_chunks, violations, done_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (stem) DO UPDATE SET version = excluded.version, md5 = excluded.md5,
+            cues = excluded.cues, failed_chunks = excluded.failed_chunks,
+            violations = excluded.violations, done_at = excluded.done_at""",
+                     (stem, version, md5, cues, failed_chunks, violations, now))])
 
 
 def record_fix(db, stem: str, *, md5_before: str, md5_after: str, version: str,

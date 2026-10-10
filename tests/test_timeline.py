@@ -60,3 +60,25 @@ def test_timeline_is_monotonic_and_non_overlapping():
     for a, b in zip(cues, cues[1:]):
         assert a.end <= b.start
         assert a.start < a.end
+
+
+def test_turn_marker_forces_a_break_and_is_not_displayed():
+    words = [Word("你好嗎", 0.0, 1.0), Word("我很好", 1.0, 2.0)]
+    cues = build_cues(words, "你好嗎／我很好")
+    assert [c.text for c in cues] == ["你好嗎", "我很好"]
+
+
+def test_an_extra_character_does_not_shift_the_timing_of_what_follows():
+    # 模型多吐了一個「啊」。逐字推進的話，之後每個字都借到下一個字的時間，
+    # 「的。」會跨過 5 秒的停頓被切成孤兒。
+    words = _words([("很臭的", 0.0, 1.5), ("夏丁宇", 6.5, 8.0)])
+    cues = build_cues(words, "很臭啊的。夏丁宇？")
+    assert [c.text for c in cues] == ["很臭啊的。", "夏丁宇？"]
+    assert cues[0].end == 1.5 and cues[1].start == 6.5
+
+
+def test_a_dropped_character_does_not_shift_the_timing_of_what_follows():
+    words = _words([("很臭的", 0.0, 1.5), ("夏丁宇", 6.5, 8.0)])
+    cues = build_cues(words, "很臭。夏丁宇？")
+    assert [c.text for c in cues] == ["很臭。", "夏丁宇？"]
+    assert cues[1].start == 6.5

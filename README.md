@@ -96,12 +96,14 @@ OAuth 同意畫面停在 **測試中** 時，Google 發的 refresh token **7 天
 把字幕變成「生活大小事都能引用」的海綿寶寶金句庫。**在本機跑**：模型走 `claude -p --model haiku`（訂閱額度），資料存在 Turso（台詞有版權，不進公開 repo）。
 
 ```bash
+uv run bob reseg            # 從 _psr/ 的原始轉錄用 Haiku 重新加標點與換人記號、重新斷句（--only、--redo）
 uv run bob fix              # 照語音修正誤聽，改寫 Drive 上的字幕（原檔備份為 _psr/<集名>.asr.srt）
 uv run bob index            # 標記已修正、尚未標記或內容已變的字幕（--limit、--workers）
 uv run bob ask "週一不想上班"  # 描述處境 → 推薦台詞、集數與時間碼（-v 顯示搜尋條件）
 uv run bob audit            # 字幕錯字/人名/幻覺統計、Haiku 提的新標籤
 ```
 
+- **斷句**：送去加標點的文字在停頓 ≥ 0.5 秒處換行當提示；模型除了標點還會在換人說話處插入「／」，斷句遇到它一定換一條，一條字幕不會混進兩個角色的話。加標點後的文字用 diff 對回原文再取時間，模型多吐或少吐一個字不會讓後面每個字錯位。句號後面的碎片併給下一句、沒有標點時在 jieba 詞邊界折行、Whisper 的重複迴圈（兩百個「來」）在加標點前收掉。雲端 pipeline 用同一套規則（DeepSeek 加標點）。
 - **修正只修「聽錯的字」**：先照 `glossary.yml` 的 `wrong` 對照統一替換（Haiku 逐集判斷會這集修、那集漏，反覆出現的誤聽由人工審過的對照表負責；`bob audit` 列出候選）。其餘交給 Haiku 提出 `{編號, 錯字, 正字}`，程式檢查錯字確實出現在該條字幕、長度差 ≤ 2、前後拼音相似度 ≥ 0.55 才套用（謝老闆→蟹老闆 1.0 放行；把「我做不得白大姨」猜成「派大星」0.42 擋下）。cue 時間不動。每次都從原始備份重修，所以改 prompt（`fix.FIX_VERSION`）或 `glossary.yml` 後重跑不會越修越歪；pipeline 重做的字幕（md5 對不上）視為新的原始版本。
 - **Haiku 只回字幕編號，不回台詞**。金句文字依編號從 SRT 切出，資料庫裡的每個字都是字幕上真有的。
 - 標籤是封閉的 `taxonomy.yml`（情境、情緒、語氣用途、角色），JSON schema 以 enum 強制；Haiku 覺得不夠時寫進 `tag_suggestions`，人工決定要不要加。

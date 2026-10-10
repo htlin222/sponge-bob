@@ -5,7 +5,10 @@
 word 就給出時間。**不需要 diff、不需要錨點、不可能漂移。**
 """
 
+from difflib import SequenceMatcher
+
 from psr.models import Cue, Word
+from psr.punctuate import TURN
 from psr.text import display_width, normalize
 
 SENTENCE_END = "。！？!?…"
@@ -43,6 +46,29 @@ def _char_index(words: list[Word]) -> tuple[list[tuple[float, float]], list[str]
     return spans, chars
 
 
+def _align(punctuated: str, source: list[str]) -> list[int]:
+    """加了標點的文字中，每個內容字元 → 原文字元的索引。
+
+    「只插標點」的驗證容許 2% 的出入（模型偶爾修掉一個口誤、多吐一個字）。
+    逐字往前推的指標遇到多出來的一個字，之後**每個字都會借到下一個字的時間**，
+    句尾的字跨過停頓被切成「臭味很臭／的。」這種孤兒（實測）。改用 diff 對齊：
+    相同與等長替換的字一對一，多出來的字沿用前一個原文字元的時間，被刪掉的
+    原文字元直接跳過——誤差不會往後傳。
+    """
+    content = [normalize(ch)[0][:1] for ch in punctuated if normalize(ch)[0]]
+    target = [normalize(ch)[0][:1] for ch in source]
+    mapping: list[int] = []
+    last = 0
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, content, target, autojunk=False).get_opcodes():
+        for k in range(i2 - i1):
+            if tag == "equal" or (tag == "replace" and k < j2 - j1):
+                last = j1 + k
+            elif tag == "replace":
+                last = j2 - 1                 # 比原文長的替換：多出的字黏在最後一個
+            mapping.append(min(last, len(source) - 1))
+    return mapping
+
+
 def build_cues(
     words: list[Word],
     punctuated: str,
@@ -54,13 +80,15 @@ def build_cues(
 
     斷點的三個來源，依序判斷：
 
+      換人記號（／）      另一個角色開口，一定換一條。
       句尾標點（。！？）  一句話講完就換一條。
       句中標點（，、；）  且累積寬度已達 soft_min——太早在逗號斷會切出
                           讀不完整的半句。
       靜音                 下一個字距離目前結尾超過 max_gap 秒。
       寬度上限             真的沒有標點可依循時的最後手段。
     """
-    spans, _ = _char_index(words)
+    spans, chars = _char_index(words)
+    mapping = _align(punctuated, chars)
     cues: list[Cue] = []
     buffer: list[str] = []
     start_time: float | None = None
@@ -75,6 +103,9 @@ def build_cues(
         buffer, start_time = [], None
 
     for char in punctuated:
+        if char == TURN:                      # 換人說話：一定斷開，記號本身不顯示
+            flush()
+            continue
         if char in PUNCTUATION:
             if start_time is None:
                 continue                      # 開頭的孤兒標點，直接丟掉
@@ -86,10 +117,11 @@ def build_cues(
         if not normalize(char)[0]:
             continue                          # 空白等在正規化後消失的字元
 
-        if cursor >= len(spans):
+        if cursor >= len(mapping):
             break
 
-        char_start, char_end = spans[cursor]
+        char_start, char_end = spans[mapping[cursor]]
+        char_start = max(char_start, end_time)   # 共用時間的多出字元不能倒退
         # 跨越長靜音就先收尾，否則字幕會橫跨整段停頓掛在螢幕上。
         if start_time is not None and char_start - end_time > max_gap:
             flush()

@@ -1,3 +1,7 @@
+import logging
+
+import jieba
+
 from psr.models import Word, Cue
 from psr.text import display_width
 
@@ -65,9 +69,11 @@ def merge_short_cues(
 
 
 FRAGMENT_WIDTH = 2.0
+FRAGMENT_JOIN_GAP = 1.5
 
 
-def absorb_fragments(cues: list[Cue], min_width: float = FRAGMENT_WIDTH) -> list[Cue]:
+def absorb_fragments(cues: list[Cue], min_width: float = FRAGMENT_WIDTH,
+                     join_gap: float = FRAGMENT_JOIN_GAP) -> list[Cue]:
     """把碎片字幕併進鄰居，直到一條都不剩。
 
     merge_short_cues 已經會合併碎片，但它同時受標點停止條件約束——碎片剛好
@@ -77,20 +83,34 @@ def absorb_fragments(cues: list[Cue], min_width: float = FRAGMENT_WIDTH) -> list
     一條寬度不到兩個全形字的字幕在螢幕上就是閃一下，讀不到卻佔著時間，
     無論它前面是句號還是逗號都一樣錯。
 
-    併入哪一側取決於時間距離：黏給比較近的鄰居，這樣時間軸的失真最小。
+    併到哪一側看語意：前一條已經以句尾標點收尾，碎片就是下一句的開頭，
+    只要跟下一條的間隔在 join_gap 秒內就併給下一條；否則併回前一條。
+    實測一律併回前一條會產生「為什麼？海」這種句尾黏著下一句開頭的字幕（363 條）。
     """
     if not cues:
         return []
     out: list[Cue] = []
-    for cue in cues:
-        if out and display_width(cue.text.strip()) < min_width:
-            prev = out[-1]
-            out[-1] = Cue(prev.index, prev.start, cue.end, prev.text + cue.text)
-            continue
-        if out and display_width(out[-1].text.strip()) < min_width:
-            prev = out.pop()
-            cue = Cue(prev.index, prev.start, cue.end, prev.text + cue.text)
+    carry: Cue | None = None          # 等著併進下一條的碎片
+    for i, cue in enumerate(cues):
+        if carry is not None:
+            cue = Cue(carry.index, carry.start, cue.end, carry.text + cue.text)
+            carry = None
+        if display_width(cue.text.strip()) < min_width:
+            nxt = cues[i + 1] if i + 1 < len(cues) else None
+            starts_sentence = not out or out[-1].text.rstrip()[-1:] in _SENTENCE_END
+            if nxt is not None and starts_sentence and nxt.start - cue.end <= join_gap:
+                carry = cue
+                continue
+            if out:
+                prev = out[-1]
+                out[-1] = Cue(prev.index, prev.start, cue.end, prev.text + cue.text)
+                continue
+            if nxt is not None:
+                carry = cue
+                continue
         out.append(cue)
+    if carry is not None:
+        out.append(carry)
     return _reindex(out)
 
 
@@ -150,13 +170,8 @@ def _wrap(text: str) -> str:
             dist = abs(acc - half)
             if best_dist is None or dist < best_dist:
                 best, best_dist = i + 1, dist
-    if best is None:                      # 沒有標點可用就取中點
-        acc = 0.0
-        for i, ch in enumerate(text):
-            acc += display_width(ch)
-            if acc >= half:
-                best = i + 1
-                break
+    if best is None:                      # 沒有標點可用：取最接近中點的詞邊界
+        best = _word_boundary_near(text, half)
     if not best or best >= len(text):
         return text
     left, right = text[:best], text[best:]
@@ -165,6 +180,25 @@ def _wrap(text: str) -> str:
     if display_width(right) > _WRAP_TARGET and "\n" not in right:
         right = _wrap(right)
     return left + "\n" + right
+
+
+jieba.setLogLevel(logging.WARNING)
+
+
+def _word_boundary_near(text: str, target: float) -> int | None:
+    """最接近 target 寬度的詞邊界。直接取中點會切出「明天一／定會更好」。"""
+    best, best_dist = None, None
+    acc = 0.0
+    pos = 0
+    for token in jieba.cut(text, HMM=True):
+        pos += len(token)
+        acc += display_width(token)
+        if pos >= len(text):
+            break
+        dist = abs(acc - target)
+        if best_dist is None or dist < best_dist:
+            best, best_dist = pos, dist
+    return best
 
 
 def _at_punctuation(text: str) -> bool:

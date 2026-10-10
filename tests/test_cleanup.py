@@ -56,3 +56,18 @@ def test_unequal_length_pairs_are_ignored():
     words = _w("海綿", "寶")
     fixed, n = apply_corrections(words, [("海綿寶", "海綿寶寶")])
     assert fixed == words and n == 0
+
+
+def test_collapse_repeats_drops_whisper_loops_but_keeps_short_laughs():
+    from psr.cleanup import collapse_repeats
+    words = [Word("哈哈哈", 0.0, 1.0), Word("來" * 200, 1.0, 9.0), Word("好", 9.0, 9.5)]
+    out, dropped = collapse_repeats(words)
+    assert [w.text for w in out] == ["哈哈哈", "來" * 6, "好"] and dropped == 194
+    assert [(w.start, w.end) for w in out] == [(0.0, 1.0), (1.0, 9.0), (9.0, 9.5)]
+
+
+def test_collapse_repeats_counts_runs_across_words_and_drops_emptied_words():
+    from psr.cleanup import collapse_repeats
+    words = [Word("來來來", 0.0, 1.0), Word("來來來", 1.0, 2.0), Word("來", 2.0, 2.5), Word("好", 2.5, 3.0)]
+    out, dropped = collapse_repeats(words)
+    assert [w.text for w in out] == ["來來來", "來來來", "好"] and dropped == 1

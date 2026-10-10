@@ -177,6 +177,8 @@ def process_episode(ep: Episode, *, service, transcriber, gloss, llm,
         # 之後統計誤聽、補術語表要看的正是它們。
         clean, dropped = cleanup.drop_hallucinations(words, list(gloss.hallucinations))
         clean, corrected = cleanup.apply_corrections(clean, gloss.corrections())
+        clean, looped = cleanup.collapse_repeats(clean)
+        dropped += looped
 
         man.stage_keys["punctuate"] = manifest_mod.stage_key(
             "punctuate", PUNCTUATE_STAGE_VERSION,

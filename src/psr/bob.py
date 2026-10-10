@@ -1,5 +1,6 @@
 """`bob`：海綿寶寶金句庫。
 
+    bob reseg [--limit N] [--only 集名片段] 用 Haiku 重新加標點與換人記號，重新斷句字幕
     bob fix [--limit N] [--workers 4]     照語音修正誤聽（同音字），改寫 Drive 上的字幕
     bob index [--limit N] [--workers 4]   用 Haiku 標記已修正的字幕
     bob ask "明天要上台報告好緊張"          找出最適合引用的台詞
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -20,10 +22,15 @@ from pathlib import Path
 
 from googleapiclient.discovery import build
 
-from psr import claude_cli, drive, fix, glossary, quotedb, quotes
+from psr import claude_cli, cleanup, drive, fix, glossary, quotedb, quotes
+from psr import punctuate as punct_mod
 from psr.batch import WORK_SUBFOLDER, validate_folder_id
-from psr.cli import TOKEN_PATH
+from psr.cli import TOKEN_PATH, _build_cues
+from psr.models import Word
 from psr.srt import parse, render
+from psr.text import to_traditional
+from psr.validate import validate
+from psr.youtube import drive_paths
 
 ROOT = Path(__file__).resolve().parents[2]
 TAXONOMY_PATH = ROOT / "taxonomy.yml"
@@ -117,6 +124,97 @@ def cmd_fix(args) -> int:
                 continue
             sample = "、".join(f"{x.wrong}→{x.right}" for x in applied[:4])
             print(f"[{n}/{len(jobs)}] {label}：修正 {len(applied)}、擋下 {len(skipped)}  {sample}", flush=True)
+    return 1 if failures else 0
+
+
+RESEG_VERSION = "1"
+PUNCT_SCHEMA = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+
+
+def _haiku_punctuate(chunk: str, model: str, attempts: int = 2) -> str | None:
+    """跟雲端 DeepSeek 同一份「只插標點」契約與驗證。驗證不過就從中間的停頓
+    切成兩半各自重試——塊越小模型越守規矩；切到不能再切仍失敗才回 None，退回原文。"""
+    for _ in range(attempts):
+        try:
+            out = claude_cli.ask(chunk, system=punct_mod.SYSTEM, schema=PUNCT_SCHEMA, model=model)["text"]
+        except claude_cli.ClaudeError:
+            continue
+        out = punct_mod.fullwidth(to_traditional(out.strip()))
+        if punct_mod.similarity(chunk, out) >= punct_mod.MIN_SIMILARITY:
+            return out
+    halves = punct_mod.split_at_pause(chunk)
+    if halves is None:
+        return None
+    parts = [_haiku_punctuate(h, model, attempts) for h in halves]
+    return None if None in parts else "".join(parts)
+
+
+def _reseg_episode(words: list[Word], gloss: glossary.Glossary, audio_duration: float, model: str):
+    clean, _ = cleanup.drop_hallucinations(words, list(gloss.hallucinations))
+    clean, _ = cleanup.apply_corrections(clean, gloss.corrections())
+    clean, _ = cleanup.collapse_repeats(clean)
+    chunks = punct_mod.make_chunks(clean)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        outs = list(pool.map(lambda c: _haiku_punctuate(c, model), chunks))
+    punctuated = "".join(o if o else to_traditional(c) for o, c in zip(outs, chunks))
+    cues = _build_cues(clean, punctuated, audio_duration)
+    return cues, sum(o is None for o in outs), punctuated.count(punct_mod.TURN)
+
+
+def cmd_reseg(args) -> int:
+    """從 _psr/ 的原始轉錄重新加標點、重新斷句，覆寫 Drive 上的字幕。
+
+    之後 `bob fix` 會把新字幕視為新的原始版本（md5 對不上）重新備份與修正，
+    `bob index` 也會因為時間軸改變而整集重標。
+    """
+    db = quotedb.connect(args.db)
+    quotedb.init(db, quotes.load_taxonomy(TAXONOMY_PATH))
+    state = quotedb.reseg_state(db)
+    gloss = glossary.load(GLOSSARY_PATH)
+    service, files, work_id = _drive_srts(args.folder)
+    work = {f["name"]: f["id"] for f in drive.list_children(service, work_id)} if work_id else {}
+    pending = [f for f in files
+               if args.redo or state.get(f["name"].removesuffix(SRT_SUFFIX)) != RESEG_VERSION]
+    print(f"字幕 {len(files)} 集，已重新斷句 {len(files) - len(pending)}，待處理 {len(pending)}（版本 {RESEG_VERSION}）",
+          flush=True)
+    pending = [f for f in pending if args.only in f["name"]]
+    if args.limit:
+        pending = pending[:args.limit]
+
+    jobs = []
+    for f in pending:
+        stem = f["name"].removesuffix(SRT_SUFFIX)
+        names = drive_paths(stem)
+        if names["words"] not in work:
+            print(f"{stem}：找不到 words.json，略過", file=sys.stderr)
+            continue
+        raw = json.loads(drive.read_text(service, work[names["words"]]))
+        words = [Word(w["text"], w["start"], w["end"]) for w in raw]
+        duration = words[-1].end if words else 0.0
+        if names["manifest"] in work:
+            timings = json.loads(drive.read_text(service, work[names["manifest"]])).get("timings", {})
+            duration = float(timings.get("audio_duration") or duration)
+        jobs.append((f, stem, words, duration))
+
+    failures = 0
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {pool.submit(_reseg_episode, words, gloss, duration, args.model): (f, stem, duration)
+                   for f, stem, words, duration in jobs}
+        for n, fut in enumerate(as_completed(futures), 1):
+            f, stem, duration = futures[fut]
+            label = _label(quotes.parse_episode_name(f["name"]))
+            try:
+                cues, failed, turns = fut.result()
+                violations = validate(cues, duration)
+                md5 = _write(service, f["name"], args.folder, render(cues))
+                quotedb.record_reseg(db, stem, version=RESEG_VERSION, md5=md5, cues=len(cues),
+                                     failed_chunks=failed, violations=len(violations))
+            except Exception as e:  # 單集失敗不中斷整批，下次重跑會補
+                failures += 1
+                print(f"[{n}/{len(jobs)}] {label} 失敗：{e}", file=sys.stderr, flush=True)
+                continue
+            print(f"[{n}/{len(jobs)}] {label}：字幕 {len(cues)}、換人 {turns}、"
+                  f"標點失敗塊 {failed}、違規 {len(violations)}", flush=True)
     return 1 if failures else 0
 
 
@@ -266,13 +364,17 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="bob", description="海綿寶寶金句庫")
     parser.add_argument("--db", help="改用本機 SQLite 檔（預設連 Turso）")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name, help_text in (("fix", "照語音修正誤聽，改寫 Drive 上的字幕（原檔備份到 _psr/）"),
+    for name, help_text in (("reseg", "用 Haiku 重新加標點與換人記號，重新斷句 Drive 上的字幕"),
+                            ("fix", "照語音修正誤聽，改寫 Drive 上的字幕（原檔備份到 _psr/）"),
                             ("index", "用 Haiku 標記已修正、尚未標記或內容已變的字幕")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--folder", default=os.environ.get("DRIVE_FOLDER_ID", ""))
         p.add_argument("--limit", type=int, default=0, help="本輪最多幾集，0 = 全部")
         p.add_argument("--workers", type=int, default=4)
         p.add_argument("--model", default="haiku")
+        p.add_argument("--only", default="", help="只處理檔名含此字串的集數")
+        if name == "reseg":
+            p.add_argument("--redo", action="store_true", help="已重新斷句過的也重做")
     ask = sub.add_parser("ask", help="描述你的處境，找海綿寶寶台詞")
     ask.add_argument("situation")
     ask.add_argument("--model", default="haiku")
@@ -280,9 +382,9 @@ def main(argv=None) -> int:
     audit = sub.add_parser("audit", help="彙整字幕審計結果與標籤提案")
     audit.add_argument("--top", type=int, default=30)
     args = parser.parse_args(argv)
-    if args.cmd in ("fix", "index"):
+    if args.cmd in ("reseg", "fix", "index"):
         args.folder = validate_folder_id(args.folder)
-    return {"fix": cmd_fix, "index": cmd_index, "ask": cmd_ask, "audit": cmd_audit}[args.cmd](args)
+    return {"reseg": cmd_reseg, "fix": cmd_fix, "index": cmd_index, "ask": cmd_ask, "audit": cmd_audit}[args.cmd](args)
 
 
 if __name__ == "__main__":

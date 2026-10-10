@@ -11,6 +11,7 @@
 """
 
 import difflib
+import re
 import time
 
 from psr.text import normalize, to_traditional
@@ -22,11 +23,26 @@ CHUNK_CHARS = 1500
 MIN_SIMILARITY = 0.98
 RETRY_DELAYS = (3, 10, 30)
 
+# 換人記號：模型判斷換了角色開口時插在新說話者的第一個字前面。它是標點類
+# 字元，normalize 會丟掉，所以「只插標點」的驗證照常成立；timeline 遇到它
+# 就強制斷句，一條字幕不會再混進兩個角色的話。
+TURN = "／"
+# 字間停頓超過這個秒數就在送給模型的文字裡換行，當作「這裡有停頓」的提示。
+PAUSE_HINT_S = 0.5
+
 SYSTEM = (
-    "你的唯一任務是替中文逐字稿加上標點符號。\n"
-    "絕對規則：除了插入標點（，。！？、）之外，一個字都不可以改、刪、加。\n"
-    "把標點放在語意自然停頓處：完整句子結束用句號，句中停頓用逗號。\n"
-    "只輸出加了標點的文字本身，不要任何說明、不要 JSON、不要編號。"
+    "你替卡通的語音辨識逐字稿加標點。逐字稿是多個角色輪流說話的對白；"
+    "換行代表說話中有停頓（不一定是換人）。\n\n"
+    "絕對規則：只能插入標點符號 ，。！？、 與換人記號 ／，其他一個字都不可以改、刪、加、調換，"
+    "也不要修正錯字。\n\n"
+    "標點：\n"
+    "- 一句話說完就用句號、問號或驚嘆號，不要用逗號把好幾句串在一起。"
+    "疑問句用？，喊叫、驚呼、感嘆用！。\n"
+    "- 句子內部的停頓才用逗號。\n"
+    "換人記號：\n"
+    "- 判斷換了另一個角色開口時，在新說話者的第一個字前面插入 ／（緊接在前一句的句尾標點之後）。"
+    "依稱呼、問答、語氣判斷；沒有把握就不要插。\n\n"
+    "只輸出加好標點的文字本身，不要任何說明、不要 JSON、不要編號；換行可以省略。"
 )
 
 
@@ -46,19 +62,50 @@ def similarity(original: str, punctuated: str) -> float:
     ).ratio()
 
 
-def make_chunks(words, chunk_chars: int = CHUNK_CHARS) -> list[str]:
+def make_chunks(words, chunk_chars: int = CHUNK_CHARS, pause_s: float = PAUSE_HINT_S) -> list[str]:
+    """把 words 串成送給模型的文字塊。字間停頓 ≥ pause_s 秒的地方換行，提示
+    模型這裡可能是句尾或換人；塊也盡量切在停頓處，避免把一句話劈成兩塊。
+    換行是空白，normalize 會丟掉，不影響逐字驗證。"""
     chunks: list[str] = []
     buf: list[str] = []
     size = 0
+    prev_end = None
     for word in words:
+        paused = prev_end is not None and word.start - prev_end >= pause_s
+        if buf and size >= chunk_chars and (paused or size >= 2 * chunk_chars):
+            chunks.append("".join(buf).strip())
+            buf, size = [], 0
+        elif paused and buf:
+            buf.append("\n")
         buf.append(word.text)
         size += len(word.text)
-        if size >= chunk_chars:
-            chunks.append("".join(buf))
-            buf, size = [], 0
+        prev_end = word.end
     if buf:
-        chunks.append("".join(buf))
+        chunks.append("".join(buf).strip())
     return chunks
+
+
+_HALFWIDTH = {",": "，", "?": "？", "!": "！", ";": "；", ":": "："}
+_HALFWIDTH_AFTER_CJK = re.compile(r"(?<=[\u3400-\u9fff])[,?!;:]")
+
+
+def fullwidth(text: str) -> str:
+    """中文字後面的半形標點改成全形。模型偶爾混用，字幕裡「你好?」很刺眼。"""
+    return _HALFWIDTH_AFTER_CJK.sub(lambda m: _HALFWIDTH[m.group(0)], text)
+
+
+MIN_SPLIT_CHARS = 200
+
+
+def split_at_pause(chunk: str) -> tuple[str, str] | None:
+    """從最靠近中間的停頓（換行）切成兩半；太短或沒有停頓就回 None。"""
+    if len(chunk) < MIN_SPLIT_CHARS:
+        return None
+    breaks = [i for i, ch in enumerate(chunk) if ch == "\n"]
+    if not breaks:
+        return None
+    mid = min(breaks, key=lambda i: abs(i - len(chunk) / 2))
+    return chunk[:mid], chunk[mid:]
 
 
 def punctuate_chunk(chunk: str, client, sleep=time.sleep):
@@ -86,7 +133,7 @@ def punctuate_chunk(chunk: str, client, sleep=time.sleep):
             prompt_tokens += usage.prompt_tokens
             completion_tokens += usage.completion_tokens
 
-        out = to_traditional((response.choices[0].message.content or "").strip())
+        out = fullwidth(to_traditional((response.choices[0].message.content or "").strip()))
         ratio = similarity(chunk, out)
         if ratio >= MIN_SIMILARITY:
             return out, prompt_tokens, completion_tokens, f"相似度 {ratio:.4f}"
