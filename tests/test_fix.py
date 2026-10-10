@@ -62,3 +62,8 @@ def test_glossary_pairs_apply_longest_first_and_keep_timing():
 def test_glossary_leaves_cues_without_matches_untouched():
     fixed, applied = apply_glossary(CUES[1:2], [("派大西", "派大星")])
     assert fixed == CUES[1:2] and applied == []
+
+
+def test_glossary_replacements_chain_until_stable():
+    fixed, _ = apply_glossary([Cue(1, 0.0, 1.0, "有看到每位謝寶嗎")], [("謝寶", "蟹堡"), ("每位蟹堡", "美味蟹堡")])
+    assert fixed[0].text == "有看到美味蟹堡嗎"

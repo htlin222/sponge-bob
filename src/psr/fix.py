@@ -24,6 +24,7 @@ FIX_VERSION = "3"  # 2：先轉繁（加標點失敗的塊漏了繁化）；3：
 # 由實測誤聽校準：佳音哥→章魚哥 0.57 要放行，我做不得白大姨→派大星 0.42 要擋。
 SOUND_THRESHOLD = 0.55
 MAX_LENGTH_CHANGE = 2
+MAX_GLOSSARY_PASSES = 3
 
 SYSTEM_PROMPT = """你是《海綿寶寶》台灣配音版的字幕校對。字幕由語音辨識產生，常把字音聽對、字選錯。
 
@@ -88,11 +89,16 @@ def apply_glossary(cues: list[Cue], pairs: list[tuple[str, str]]) -> tuple[list[
     applied: list[Fix] = []
     for c in cues:
         text = c.text
-        for wrong, right in ordered:
-            n = text.count(wrong)
-            if n:
-                text = text.replace(wrong, right)
-                applied.extend([Fix(c.index, wrong, right)] * n)
+        # 替換會連鎖：「每位謝寶」先被「謝寶→蟹堡」換成「每位蟹堡」，下一輪才輪到它。
+        for _ in range(MAX_GLOSSARY_PASSES):
+            before = text
+            for wrong, right in ordered:
+                n = text.count(wrong)
+                if n:
+                    text = text.replace(wrong, right)
+                    applied.extend([Fix(c.index, wrong, right)] * n)
+            if text == before:
+                break
         out.append(replace(c, text=text))
     return out, applied
 
