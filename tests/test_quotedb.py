@@ -74,3 +74,18 @@ def test_ties_prefer_higher_quotability():
 def test_turso_values_round_trip():
     for v in (None, 3, 2.5, "海綿寶寶"):
         assert quotedb._decode(quotedb._encode(v)) == v
+
+
+def test_refresh_text_keeps_tags_and_reslices_quotes():
+    db = _db(_quote(1, 2, "我準備好了\n又是星期一", "上班前", ("situations", "上班")))
+    fixed = [Cue(1, 0.0, 1.0, "我準備好了！"), Cue(2, 1.0, 2.0, "又是星期一"), Cue(3, 2.0, 3.0, "百分百完美")]
+    quotedb.refresh_text(db, META.stem, srt_md5="m9", cues=fixed)
+    assert db.execute("SELECT text FROM quotes") == [("我準備好了！\n又是星期一",)]
+    assert db.execute("SELECT text FROM cues ORDER BY idx")[2] == ("百分百完美",)
+    assert db.execute("SELECT count(*) FROM quote_tags") == [(1,)]
+    assert quotedb.indexed_versions(db) == {META.stem: ("m9", "v1")}
+
+
+def test_cue_timings_lists_index_start_end_in_order():
+    db = _db()
+    assert quotedb.cue_timings(db, META.stem) == [(1, 0.0, 1.0), (2, 1.0, 2.0), (3, 2.0, 3.0)]

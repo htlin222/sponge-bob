@@ -253,6 +253,27 @@ def write_episode(db, meta: EpisodeMeta, *, drive_id: str, srt_md5: str, version
     db.transaction(stmts)
 
 
+def cue_timings(db, stem: str) -> list[tuple[int, float, float]]:
+    """該集已入庫字幕的 (編號, 起, 訖)，用來判斷新字幕是否只改了字。"""
+    return [tuple(r) for r in db.execute(
+        f"SELECT idx, start_s, end_s FROM cues WHERE episode_id = {_EPISODE_ID} ORDER BY idx", (stem,))]
+
+
+def refresh_text(db, stem: str, *, srt_md5: str, cues: list[Cue]) -> None:
+    """字幕只改了字（編號與時間都沒變）時，就地更新台詞文字，保留標記結果。
+
+    金句只記 cue 編號範圍，文字依編號重新切出即可，不必再花一次模型額度重標。
+    """
+    text = {c.index: c.text for c in cues}
+    spans = db.execute(f"SELECT id, cue_from, cue_to FROM quotes WHERE episode_id = {_EPISODE_ID}", (stem,))
+    stmts = [(f"UPDATE cues SET text = ? WHERE episode_id = {_EPISODE_ID} AND idx = ?", (c.text, stem, c.index))
+             for c in cues]
+    stmts += [("UPDATE quotes SET text = ? WHERE id = ?",
+               ("\n".join(text[i] for i in range(a, b + 1)), qid)) for qid, a, b in spans]
+    stmts.append(("UPDATE episodes SET srt_md5 = ? WHERE stem = ?", (srt_md5, stem)))
+    db.transaction(stmts)
+
+
 def fix_state(db) -> dict[str, tuple[str, str]]:
     """stem → (修正後 md5, fix 版本)。Drive 上的 md5 等於修正後 md5 代表檔案仍是我們的輸出。"""
     return {stem: (md5, ver) for stem, md5, ver in

@@ -67,6 +67,8 @@ def cmd_fix(args) -> int:
     quotedb.init(db, quotes.load_taxonomy(TAXONOMY_PATH))
     state = quotedb.fix_state(db)
     gloss = glossary.load(GLOSSARY_PATH)
+    # 對照表一改就要重修：版本帶上 glossary 的 hash。重修只改字，index 會就地更新文字。
+    version = f"{fix.FIX_VERSION}-g{gloss.content_hash()[:8]}"
     service, files, work_id = _drive_srts(args.folder)
     if not work_id:
         print(f"找不到 {WORK_SUBFOLDER}/ 子資料夾，無處備份原始字幕。", file=sys.stderr)
@@ -74,8 +76,8 @@ def cmd_fix(args) -> int:
     backups = {f["name"]: f["id"] for f in drive.list_children(service, work_id)}
 
     pending = [f for f in files
-               if state.get(f["name"].removesuffix(SRT_SUFFIX)) != (f.get("md5Checksum"), fix.FIX_VERSION)]
-    print(f"字幕 {len(files)} 集，已修正 {len(files) - len(pending)}，待修正 {len(pending)}（版本 {fix.FIX_VERSION}）")
+               if state.get(f["name"].removesuffix(SRT_SUFFIX)) != (f.get("md5Checksum"), version)]
+    print(f"字幕 {len(files)} 集，已修正 {len(files) - len(pending)}，待修正 {len(pending)}（版本 {version}）")
     if args.limit:
         pending = pending[:args.limit]
 
@@ -108,7 +110,7 @@ def cmd_fix(args) -> int:
                 md5_after = (_write(service, f["name"], args.folder, new_text)
                              if new_text != current else f.get("md5Checksum") or _md5(current))
                 quotedb.record_fix(db, stem, md5_before=_md5(source), md5_after=md5_after,
-                                   version=fix.FIX_VERSION, applied=applied, skipped=skipped)
+                                   version=version, applied=applied, skipped=skipped)
             except Exception as e:  # 單集失敗不中斷整批，下次重跑會補
                 failures += 1
                 print(f"[{n}/{len(jobs)}] {label} 失敗：{e}", file=sys.stderr, flush=True)
@@ -141,12 +143,22 @@ def cmd_index(args) -> int:
     # 只標記修正過的字幕：沒修正就標，修正後 md5 改變又得整集重標。
     ready = [f for f in files if fixed.get(f["name"].removesuffix(SRT_SUFFIX)) == f.get("md5Checksum")]
     pending = []
+    refreshed = 0
     for f in ready:
         meta = quotes.parse_episode_name(f["name"])
-        if done.get(meta.stem) != (f.get("md5Checksum"), version):
-            pending.append((f, meta))
-    print(f"字幕 {len(files)} 集，已修正 {len(ready)}，已標記 {len(ready) - len(pending)}，"
-          f"待標記 {len(pending)}（版本 {version}）")
+        md5 = f.get("md5Checksum")
+        if done.get(meta.stem) == (md5, version):
+            continue
+        # 同版本、只是字幕又修了字：時間軸沒變就只更新文字，不重標。
+        if meta.stem in done and done[meta.stem][1] == version:
+            cues = parse(drive.read_text(service, f["id"]))
+            if [(c.index, c.start, c.end) for c in cues] == quotedb.cue_timings(db, meta.stem):
+                quotedb.refresh_text(db, meta.stem, srt_md5=md5, cues=cues)
+                refreshed += 1
+                continue
+        pending.append((f, meta))
+    print(f"字幕 {len(files)} 集，已修正 {len(ready)}，已標記 {len(ready) - len(pending)}"
+          f"（其中只更新文字 {refreshed}），待標記 {len(pending)}（版本 {version}）")
     if args.limit:
         pending = pending[:args.limit]
 
