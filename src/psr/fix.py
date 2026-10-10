@@ -20,7 +20,7 @@ from pypinyin import lazy_pinyin
 from psr.models import Cue
 from psr.text import to_traditional
 
-FIX_VERSION = "3"  # 2：先轉繁（加標點失敗的塊漏了繁化）；3：先套 glossary 的 wrong 對照
+FIX_VERSION = "4"  # 2：先轉繁（加標點失敗的塊漏了繁化）；3：先套 glossary 的 wrong 對照；4：glossary 反覆套用到穩定
 # 由實測誤聽校準：佳音哥→章魚哥 0.57 要放行，我做不得白大姨→派大星 0.42 要擋。
 SOUND_THRESHOLD = 0.55
 MAX_LENGTH_CHANGE = 2
