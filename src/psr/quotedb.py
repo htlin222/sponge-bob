@@ -85,6 +85,10 @@ SCHEMA = [
         applied INTEGER NOT NULL,
         skipped INTEGER NOT NULL,
         fixed_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS punctuations (
+        stem TEXT PRIMARY KEY,
+        version TEXT NOT NULL,
+        text TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS resegments (
         stem TEXT PRIMARY KEY,
         version TEXT NOT NULL,
@@ -286,6 +290,18 @@ def fix_state(db) -> dict[str, tuple[str, str]]:
     """stem → (修正後 md5, fix 版本)。Drive 上的 md5 等於修正後 md5 代表檔案仍是我們的輸出。"""
     return {stem: (md5, ver) for stem, md5, ver in
             db.execute("SELECT stem, md5_after, fix_version FROM srt_fixes")}
+
+
+def cached_punctuation(db, stem: str, version: str) -> str | None:
+    """模型加好標點的全文。斷句規則改了可以直接重建，不必再問一次模型。"""
+    rows = db.execute("SELECT text FROM punctuations WHERE stem = ? AND version = ?", (stem, version))
+    return rows[0][0] if rows else None
+
+
+def cache_punctuation(db, stem: str, version: str, text: str) -> None:
+    db.transaction([("""INSERT INTO punctuations (stem, version, text) VALUES (?, ?, ?)
+        ON CONFLICT (stem) DO UPDATE SET version = excluded.version, text = excluded.text""",
+                     (stem, version, text))])
 
 
 def reseg_state(db) -> dict[str, str]:

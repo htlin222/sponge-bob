@@ -89,3 +89,11 @@ def test_refresh_text_keeps_tags_and_reslices_quotes():
 def test_cue_timings_lists_index_start_end_in_order():
     db = _db()
     assert quotedb.cue_timings(db, META.stem) == [(1, 0.0, 1.0), (2, 1.0, 2.0), (3, 2.0, 3.0)]
+
+
+def test_punctuation_cache_is_keyed_by_version():
+    db = _db()
+    assert quotedb.cached_punctuation(db, META.stem, "1") is None
+    quotedb.cache_punctuation(db, META.stem, "1", "你好。／我很好！")
+    assert quotedb.cached_punctuation(db, META.stem, "1") == "你好。／我很好！"
+    assert quotedb.cached_punctuation(db, META.stem, "2") is None

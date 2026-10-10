@@ -127,7 +127,11 @@ def cmd_fix(args) -> int:
     return 1 if failures else 0
 
 
-RESEG_VERSION = "1"
+# 標點（模型輸出，有快取）與斷句規則（純函式，便宜）分開版本：只改規則時
+# 直接用快取的標點重建，不必再花一次模型額度。
+PUNCT_VERSION = "1"
+SEG_VERSION = "2"  # 2：過短字幕併給鄰居、折行左半也限寬
+RESEG_VERSION = f"p{PUNCT_VERSION}-s{SEG_VERSION}"
 PUNCT_SCHEMA = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
 
 
@@ -149,16 +153,21 @@ def _haiku_punctuate(chunk: str, model: str, attempts: int = 2) -> str | None:
     return None if None in parts else "".join(parts)
 
 
-def _reseg_episode(words: list[Word], gloss: glossary.Glossary, audio_duration: float, model: str):
+def _reseg_episode(words: list[Word], gloss: glossary.Glossary, audio_duration: float, model: str,
+                   cached: str | None):
     clean, _ = cleanup.drop_hallucinations(words, list(gloss.hallucinations))
     clean, _ = cleanup.apply_corrections(clean, gloss.corrections())
     clean, _ = cleanup.collapse_repeats(clean)
-    chunks = punct_mod.make_chunks(clean)
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        outs = list(pool.map(lambda c: _haiku_punctuate(c, model), chunks))
-    punctuated = "".join(o if o else to_traditional(c) for o, c in zip(outs, chunks))
+    failed = 0
+    punctuated = cached
+    if punctuated is None:
+        chunks = punct_mod.make_chunks(clean)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            outs = list(pool.map(lambda c: _haiku_punctuate(c, model), chunks))
+        failed = sum(o is None for o in outs)
+        punctuated = "".join(o if o else to_traditional(c) for o, c in zip(outs, chunks))
     cues = _build_cues(clean, punctuated, audio_duration)
-    return cues, sum(o is None for o in outs), punctuated.count(punct_mod.TURN)
+    return cues, failed, punctuated
 
 
 def cmd_reseg(args) -> int:
@@ -194,17 +203,19 @@ def cmd_reseg(args) -> int:
         if names["manifest"] in work:
             timings = json.loads(drive.read_text(service, work[names["manifest"]])).get("timings", {})
             duration = float(timings.get("audio_duration") or duration)
-        jobs.append((f, stem, words, duration))
+        jobs.append((f, stem, words, duration, quotedb.cached_punctuation(db, stem, PUNCT_VERSION)))
 
     failures = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(_reseg_episode, words, gloss, duration, args.model): (f, stem, duration)
-                   for f, stem, words, duration in jobs}
+        futures = {pool.submit(_reseg_episode, words, gloss, duration, args.model, cached): (f, stem, duration, cached)
+                   for f, stem, words, duration, cached in jobs}
         for n, fut in enumerate(as_completed(futures), 1):
-            f, stem, duration = futures[fut]
+            f, stem, duration, cached = futures[fut]
             label = _label(quotes.parse_episode_name(f["name"]))
             try:
-                cues, failed, turns = fut.result()
+                cues, failed, punctuated = fut.result()
+                if cached is None and not failed:
+                    quotedb.cache_punctuation(db, stem, PUNCT_VERSION, punctuated)
                 violations = validate(cues, duration)
                 md5 = _write(service, f["name"], args.folder, render(cues))
                 quotedb.record_reseg(db, stem, version=RESEG_VERSION, md5=md5, cues=len(cues),
@@ -213,8 +224,8 @@ def cmd_reseg(args) -> int:
                 failures += 1
                 print(f"[{n}/{len(jobs)}] {label} 失敗：{e}", file=sys.stderr, flush=True)
                 continue
-            print(f"[{n}/{len(jobs)}] {label}：字幕 {len(cues)}、換人 {turns}、"
-                  f"標點失敗塊 {failed}、違規 {len(violations)}", flush=True)
+            print(f"[{n}/{len(jobs)}] {label}：字幕 {len(cues)}、換人 {punctuated.count(punct_mod.TURN)}、"
+                  f"標點失敗塊 {failed}、違規 {len(violations)}{'（快取標點）' if cached else ''}", flush=True)
     return 1 if failures else 0
 
 

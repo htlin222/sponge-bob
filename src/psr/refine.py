@@ -175,6 +175,8 @@ def _wrap(text: str) -> str:
     if not best or best >= len(text):
         return text
     left, right = text[:best], text[best:]
+    if display_width(left) > _WRAP_TARGET:
+        left = _wrap(left)
     # 對折一次還是太寬時再折一次（46 字對折是 23 字，仍超過單行 20 的上限）。
     # 上限三行——再多就不是字幕而是段落了。
     if display_width(right) > _WRAP_TARGET and "\n" not in right:
@@ -365,6 +367,33 @@ def _extend_short_cues(
         # 交給 validate 攔下並降級，比硬造出重疊誠實。
         result[i] = Cue(index=cue.index, start=start, end=end, text=cue.text)
     return result
+
+
+def merge_unreadable(cues: list[Cue], min_s: float = 0.5) -> list[Cue]:
+    """enforce_duration 借不到時間的過短字幕，併進時間上最近的鄰居。
+
+    快速對答（「啊！」「什麼？」「喔！」各 0.3 秒、首尾相接）兩邊都借不到，
+    半秒不到的字幕根本來不及讀；寧可兩句同框，也不要閃過去。
+    """
+    out = list(cues)
+    i = 0
+    while i < len(out) and len(out) > 1:
+        cue = out[i]
+        if cue.end - cue.start >= min_s - _EPS:
+            i += 1
+            continue
+        gap_prev = cue.start - out[i - 1].end if i > 0 else float("inf")
+        gap_next = out[i + 1].start - cue.end if i + 1 < len(out) else float("inf")
+        if gap_prev <= gap_next:
+            prev = out[i - 1]
+            out[i - 1] = Cue(prev.index, prev.start, cue.end, prev.text + cue.text)
+            del out[i]
+            i -= 1                      # 合併後的前一條可能仍然過短，重新檢查
+        else:
+            nxt = out[i + 1]
+            out[i] = Cue(cue.index, cue.start, nxt.end, cue.text + nxt.text)
+            del out[i + 1]
+    return _reindex(out)
 
 
 def _reindex(cues: list[Cue]) -> list[Cue]:

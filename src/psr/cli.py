@@ -22,7 +22,7 @@ from psr.asr import colab as colab_asr
 from psr.asr.colab import ColabUnavailable
 from psr.issue import parse_issue
 from psr.models import Cue, Word
-from psr.refine import absorb_fragments, enforce_duration, wrap_lines
+from psr.refine import absorb_fragments, enforce_duration, merge_unreadable, wrap_lines
 from psr.timeline import build_cues, coverage
 from psr.segment import raw_segment
 from psr.srt import render
@@ -86,7 +86,7 @@ def _build_cues(words, punctuated, audio_duration):
     cues = build_cues(words, punctuated)
     cues = absorb_fragments(cues)
     cues = enforce_duration(cues, words, audio_duration=audio_duration)
-    cues = wrap_lines(cues)
+    cues = wrap_lines(merge_unreadable(cues))
     return [Cue(i + 1, c.start, c.end, c.text) for i, c in enumerate(cues)]
 
 

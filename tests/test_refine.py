@@ -234,3 +234,26 @@ def test_wrap_without_punctuation_breaks_between_words():
         pos += len(token)
         bounds.add(pos)
     assert out.replace("\n", "") == text and len(left) in bounds
+
+
+def test_merge_unreadable_joins_back_to_back_short_cues():
+    from psr.refine import merge_unreadable
+    cues = [Cue(1, 0.0, 2.0, "你說什麼？"), Cue(2, 2.0, 2.3, "啊！"), Cue(3, 2.3, 2.6, "喔！"), Cue(4, 5.0, 7.0, "好吧。")]
+    out = merge_unreadable(cues)
+    assert all(c.end - c.start >= 0.5 for c in out)
+    assert "".join(c.text for c in out) == "你說什麼？啊！喔！好吧。"
+    assert out[0].start == 0.0 and out[-1].end == 7.0
+
+
+def test_merge_unreadable_leaves_readable_cues_alone():
+    from psr.refine import merge_unreadable
+    cues = [Cue(1, 0.0, 1.0, "第一句。"), Cue(2, 1.0, 2.0, "第二句。")]
+    assert merge_unreadable(cues) == cues
+
+
+def test_wrap_keeps_every_line_within_twenty():
+    from psr.refine import wrap_lines
+    from psr.text import display_width
+    text = "我今天真的真的非常非常想要去海邊玩，然後晚上一起吃美味蟹堡吧"
+    out = wrap_lines([Cue(1, 0.0, 5.0, text)])[0].text
+    assert out.replace("\n", "") == text and all(display_width(l) <= 20 for l in out.split("\n"))
