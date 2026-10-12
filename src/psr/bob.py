@@ -524,6 +524,13 @@ def cmd_scan(args) -> int:
                 [text_of[(stem, j)] for j in range(idx + 1, idx + n + 1) if (stem, j) in text_of])
     refs = quotedb.ref_phrases(db)
     found = refaudit.ref_suspects(cues, refs) + refaudit.homophone_suspects(cues)
+    if args.audit:  # 標記金句時模型順手回報的字幕問題，也走同一道確認與拼音門檻
+        issues = db.execute("""SELECT e.stem, a.cue_idx, a.detail, a.suggestion
+            FROM audit_issues a JOIN episodes e ON e.id = a.episode_id
+            WHERE a.type IN ('錯字', '人名', '歌詞')""")
+        found += refaudit.audit_suspects([((stem, idx), text_of[(stem, idx)], detail, suggestion)
+                                          for stem, idx, detail, suggestion in issues
+                                          if (stem, idx) in text_of])
     seen, suspects = set(), []
     for s in found:
         k = (s.key[0], s.heard, s.proposed)
@@ -533,7 +540,8 @@ def cmd_scan(args) -> int:
     cache = quotedb.scan_verdicts(db)
     todo = [s for s in suspects if (s.key[0], s.heard, s.proposed) not in cache]
     print(f"字幕 {len(cues)} 條、參考句 {len(refs)}：嫌疑 {len(suspects)}"
-          f"（參考庫 {sum(s.reason == 'ref' for s in suspects)}、同音異寫 {sum(s.reason == 'homophone' for s in suspects)}），"
+          f"（參考庫 {sum(s.reason == 'ref' for s in suspects)}、同音異寫 {sum(s.reason == 'homophone' for s in suspects)}"
+          f"、審計 {sum(s.reason == 'audit' for s in suspects)}），"
           f"待模型確認 {len(todo)}", flush=True)
     if args.limit:
         todo = todo[:args.limit]
@@ -561,10 +569,13 @@ def cmd_scan(args) -> int:
 
     # 確認過的修正延伸成至少三個字的片段（整集替換才不會誤傷），存成單集對照表
     by_stem: dict[str, dict[str, str]] = {}
+    episode_text: dict[str, list[str]] = {}
+    for (stem, _), text in cues:
+        episode_text.setdefault(stem, []).append(text)
     for s in suspects:
         ok, wrong, right = cache.get((s.key[0], s.heard, s.proposed), (False, "", ""))
         pair = refaudit.widen(s.context, s.heard, wrong, right) if ok else None
-        if pair:
+        if pair and not refaudit.ambiguous_insertion(*pair, "\n".join(episode_text[s.key[0]])):
             by_stem.setdefault(s.key[0], {})[pair[0]] = pair[1]
     known = quotedb.episode_fixes(db)
     new_rows = [(stem, w, r, "scan") for stem, pairs in by_stem.items() for w, r in pairs.items()
@@ -688,6 +699,7 @@ def main(argv=None) -> int:
     scan.add_argument("--model", default="haiku")
     scan.add_argument("--only", default="", help="只處理檔名含此字串的集數")
     scan.add_argument("--dry-run", action="store_true", help="只確認、不改寫 Drive")
+    scan.add_argument("--audit", action="store_true", help="也確認標記時回報的字幕問題（audit_issues）")
     st = sub.add_parser("still", help="抓台詞畫面，下方加字幕與出處，一次出多張候選")
     st.add_argument("episode", help="集名片段，例如 ep161 或 月球遊記")
     where = st.add_mutually_exclusive_group(required=True)

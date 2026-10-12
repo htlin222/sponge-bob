@@ -264,12 +264,36 @@ def _drop_nested(suspects: list[Suspect]) -> list[Suspect]:
     return out
 
 
+_QUOTED = re.compile(r"「([^」]+)」")
+
+
+def audit_suspects(rows: list[tuple[tuple, str, str, str]]) -> list[Suspect]:
+    """把標記金句時模型回報的字幕問題轉成嫌疑，交給同一套確認與拼音門檻。
+
+    rows 是 [(鍵, 目前字幕, 問題描述, 建議寫法)]。描述裡用「」框住、且仍出現在字幕裡的
+    片段就是可疑處；框不到就整句都可疑。建議寫法已經在字幕裡、又框不到可疑片段，
+    代表之後修過了，略過。
+    """
+    out = []
+    for key, text, detail, suggestion in rows:
+        quoted = [q for q in _QUOTED.findall(detail) if q in text and q != suggestion]
+        if quoted:
+            heard = quoted[0]
+        elif suggestion and suggestion in text:
+            continue
+        else:
+            heard = text
+        out.append(Suspect(key, heard, suggestion, text, 0.0, "audit"))
+    return out
+
+
 CONTEXT_CUES = 3  # 每題帶前後各幾條字幕：單看一句常判斷不了在講什麼
 
 CONFIRM_SYSTEM = """你是《海綿寶寶》台灣配音版的字幕校對。字幕由語音辨識產生，常把字音聽對、字選錯。
 
 每一題給你：集名、前文、本句、後文，以及本句裡的可疑片段與候選寫法。
-候選來自台灣觀眾熟知的台詞與譯名，或是同一個音在全部字幕裡最常見的寫法。
+候選來自台灣觀眾熟知的台詞與譯名、同一個音在全部字幕裡最常見的寫法，
+或先前校對者的建議（可能不準，也可能沒有候選，要你依前後文與讀音推斷正確寫法）。
 請讀前後文弄清楚這段在講什麼，再判斷可疑片段是不是誤聽：
 - 是：ok=true。wrong 填本句裡一字不差出現的那個聽錯的詞——只框這個詞本身，但要框完整
   （本句「我們在幾張電源」其實是「急徵店員」，wrong 填「幾張電源」，不是「電源」也不是整句）；
@@ -310,12 +334,22 @@ def confirm_prompt(batch: list[tuple[int, Suspect]], around=None) -> str:
             f"前文：{'／'.join(map(flat, before))}",
             f"本句：{flat(s.context)}",
             f"後文：{'／'.join(map(flat, after))}",
-            f"可疑：{flat(s.heard)}　候選：{s.proposed}",
+            f"可疑：{flat(s.heard)}　候選：{s.proposed or '（無，依前後文與讀音推斷）'}",
         ]))
     return "\n\n".join(blocks)
 
 
 MIN_FIX_CHARS = 3
+
+
+def ambiguous_insertion(wrong: str, right: str, episode_text: str) -> bool:
+    """純補字的修正（等一下→等一下下）整集替換時，會連其他本來沒錯的同一個詞一起改。
+
+    扣掉已經寫對的部分後，錯字在整集出現不只一次，就分不出該補哪一處。
+    """
+    if wrong not in right:
+        return False
+    return sum(p.count(wrong) for p in episode_text.split(right)) > 1
 
 
 def widen(context: str, heard: str, wrong: str, right: str,

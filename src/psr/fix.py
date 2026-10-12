@@ -93,9 +93,11 @@ def apply_glossary(cues: list[Cue], pairs: list[tuple[str, str]]) -> tuple[list[
         for _ in range(MAX_GLOSSARY_PASSES):
             before = text
             for wrong, right in ordered:
-                n = text.count(wrong)
+                # 正字包含錯字（綿寶寶→海綿寶寶）時，已經寫對的部分要跳過，否則會越補越長
+                parts = text.split(right) if wrong in right else [text]
+                n = sum(p.count(wrong) for p in parts)
                 if n:
-                    text = text.replace(wrong, right)
+                    text = right.join(p.replace(wrong, right) for p in parts)
                     applied.extend([Fix(c.index, wrong, right)] * n)
             if text == before:
                 break

@@ -86,3 +86,53 @@ def test_confirm_prompt_includes_surrounding_cues_and_title():
     assert "本句：我們在幾張電源" in out
     assert "後文：我準備好了" in out
     assert "可疑：幾張電源　候選：急徵店員" in out
+
+
+def test_audit_suspect_takes_quoted_fragment_found_in_cue():
+    from psr.refaudit import audit_suspects
+    rows = [(("e", 3), "我們去找謝老闆吧", "「謝老闆」應為蟹老闆", "蟹老闆")]
+    [s] = audit_suspects(rows)
+    assert (s.key, s.heard, s.proposed, s.context, s.reason) == (
+        ("e", 3), "謝老闆", "蟹老闆", "我們去找謝老闆吧", "audit")
+
+
+def test_audit_suspect_skips_quotes_not_in_cue_and_equal_to_suggestion():
+    from psr.refaudit import audit_suspects
+    rows = [(("e", 3), "叫拍大星過來", "「派大星」與本集「拍大星」不一致", "派大星")]
+    assert audit_suspects(rows)[0].heard == "拍大星"
+
+
+def test_audit_suspect_without_quote_flags_whole_cue():
+    from psr.refaudit import audit_suspects
+    rows = [(("e", 3), "天空吃了月亮的鞋", "語意不通，辨識失真", "")]
+    [s] = audit_suspects(rows)
+    assert (s.heard, s.proposed) == ("天空吃了月亮的鞋", "")
+
+
+def test_audit_suspect_dropped_when_already_fixed():
+    from psr.refaudit import audit_suspects
+    rows = [(("e", 3), "我們去找蟹老闆吧", "「謝老闆」應為蟹老闆", "蟹老闆")]
+    assert audit_suspects(rows) == []
+
+
+def test_confirm_prompt_asks_model_to_infer_when_no_candidate():
+    from psr.refaudit import Suspect, confirm_prompt
+    s = Suspect(("ep1", 5), "天空吃了月亮的鞋", "", "天空吃了月亮的鞋", 0.0, "audit")
+    out = confirm_prompt([(0, s)])
+    assert "候選：（無，依前後文與讀音推斷）" in out
+
+
+def test_insertion_fix_is_ambiguous_when_word_appears_elsewhere():
+    from psr.refaudit import ambiguous_insertion
+    # 只該補一處，但整集替換會把其他「等一下」都改掉
+    assert ambiguous_insertion("等一下", "等一下下", "等一下，好嗎\n你等一下") is True
+
+
+def test_insertion_fix_ok_when_other_hits_are_already_correct():
+    from psr.refaudit import ambiguous_insertion
+    assert ambiguous_insertion("綿寶寶", "海綿寶寶", "海綿寶寶，綿寶寶\n海綿寶寶") is False
+
+
+def test_substitution_fix_is_never_ambiguous():
+    from psr.refaudit import ambiguous_insertion
+    assert ambiguous_insertion("派大西", "派大星", "派大西\n派大西") is False

@@ -67,3 +67,19 @@ def test_glossary_leaves_cues_without_matches_untouched():
 def test_glossary_replacements_chain_until_stable():
     fixed, _ = apply_glossary([Cue(1, 0.0, 1.0, "有看到每位謝寶嗎")], [("謝寶", "蟹堡"), ("每位蟹堡", "美味蟹堡")])
     assert fixed[0].text == "有看到美味蟹堡嗎"
+
+
+def test_glossary_leaves_text_that_is_already_correct():
+    # 正字包含錯字時（綿寶寶→海綿寶寶），本來就寫對的「海綿寶寶」不能再被補一個「海」
+    cue = Cue(1, 0.0, 1.0, "海綿寶寶，綿寶寶")
+    fixed, applied = apply_glossary([cue], [("綿寶寶", "海綿寶寶")])
+    assert fixed[0].text == "海綿寶寶，海綿寶寶"
+    assert len(applied) == 1
+
+
+def test_glossary_is_idempotent_when_fix_extends_the_word():
+    cue = Cue(1, 0.0, 1.0, "等一下")
+    once, _ = apply_glossary([cue], [("等一下", "等一下下")])
+    twice, applied = apply_glossary(once, [("等一下", "等一下下")])
+    assert once[0].text == twice[0].text == "等一下下"
+    assert applied == []
