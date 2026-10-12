@@ -148,7 +148,7 @@ uv run bob still ep161 --text "開玉米罐" --speaker 珊迪  # 台詞截圖＋
 | `audit_issues`、`tag_suggestions` | 標記時模型順手回報的字幕問題與新標籤建議 |
 | `punctuations`、`resegments` | `bob reseg` 的加標點快取與重斷句紀錄 |
 
-`bob backup` 把這些表整份複製成本機 SQLite（含 rowid 與索引），可直接 `--db` 指定來離線查。
+`bob backup` 把這些表整份複製成本機 SQLite（含 rowid 與索引），解壓後用 `--db bob-YYYY-MM-DD.sqlite` 就能離線查。
 
 ## 已知限制
 
