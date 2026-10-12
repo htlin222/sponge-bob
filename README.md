@@ -103,6 +103,7 @@ uv run bob ask "週一不想上班"  # 描述處境 → 推薦台詞、集數與
 uv run bob audit            # 字幕錯字/人名/幻覺統計、Haiku 提的新標籤
 uv run bob refs refs.json   # 載入台灣配音版台詞參考庫（[{phrase, kind, source}]，只存 Turso）
 uv run bob scan             # 拼音比對找誤聽，只把嫌疑交給 Haiku 確認（--dry-run、--only、--limit）
+uv run bob still ep161 --text "開玉米罐" --speaker 珊迪  # 台詞截圖＋字幕＋出處，一次 6 張候選
 ```
 
 - **斷句**：送去加標點的文字在停頓 ≥ 0.5 秒處換行當提示；模型除了標點還會在換人說話處插入「／」，斷句遇到它一定換一條，一條字幕不會混進兩個角色的話。加標點後的文字用 diff 對回原文再取時間，模型多吐或少吐一個字不會讓後面每個字錯位。句號後面的碎片併給下一句、沒有標點時在 jieba 詞邊界折行、Whisper 的重複迴圈（兩百個「來」）在加標點前收掉。雲端 pipeline 用同一套規則（DeepSeek 加標點）。
@@ -112,6 +113,7 @@ uv run bob scan             # 拼音比對找誤聽，只把嫌疑交給 Haiku �
 - 標籤是封閉的 `taxonomy.yml`（情境、情緒、語氣用途、角色），JSON schema 以 enum 強制；Haiku 覺得不夠時寫進 `tag_suggestions`，人工決定要不要加。
 - 好引用程度 1–5，2 分以下不存。改 prompt（`quotes.PROMPT_VERSION`）或分類表會改變 index 版本，下次 `bob index` 整批重標；字幕重做（md5 改變）的集數也會自動重標；若只是修正改了字、編號與時間不變，`bob index` 只就地更新台詞文字，不重標。
 - 搜尋：先讓模型把處境轉成標籤＋關鍵字，SQL 以「標籤命中 2 分、台詞命中 3 分、情境命中 2 分」取前 30 筆，再讓模型挑 1–5 段。
+- **台詞截圖 `bob still`**：以台詞中點為中心每 0.5 秒抓一格、共 6 張（都在台詞前後 3 秒內），經 Drive API 串流取單格、不下載整部影片；每張下方加字幕與「說話者｜《海綿寶寶》Sxx epNNN〈單元〉m:ss」，另附編號總覽圖讓人挑。輸出在 `scratch/stills/`（不進 git）。Claude Code 的用法見 `.claude/skills/spongebob-still/`。
 - 連線設定：`~/.config/sponge-bob/turso.json`（`{"url","token"}`）或 `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`；`--db 檔案.sqlite` 改用本機 SQLite。
 
 ## 已知限制

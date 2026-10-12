@@ -7,6 +7,7 @@
     bob audit                             彙整 Haiku 審計出的字幕問題與標籤提案
     bob refs refs.json                    載入台灣配音版台詞參考庫（只存 Turso）
     bob scan [--dry-run]                  拼音比對找誤聽，只把嫌疑交給模型確認
+    bob still ep161 --text "開玉米罐"       抓台詞畫面加字幕與出處，一次出 6 張候選
 
 全部在本機執行：模型走 `claude -p`（訂閱額度），資料寫進 Turso。
 """
@@ -24,7 +25,7 @@ from pathlib import Path
 
 from googleapiclient.discovery import build
 
-from psr import claude_cli, cleanup, drive, fix, glossary, quotedb, quotes, refaudit
+from psr import claude_cli, cleanup, drive, fix, glossary, quotedb, quotes, refaudit, still
 from psr import punctuate as punct_mod
 from psr.batch import WORK_SUBFOLDER, validate_folder_id
 from psr.cli import TOKEN_PATH, _build_cues
@@ -509,6 +510,56 @@ def cmd_scan(args) -> int:
     return 0
 
 
+def _clock(text: str) -> float:
+    m, _, sec = text.rpartition(":")
+    return int(m or 0) * 60 + float(sec)
+
+
+def cmd_still(args) -> int:
+    db = quotedb.connect(args.db)
+    eps = db.execute("SELECT id, stem, season, episode, title FROM episodes WHERE stem LIKE ?",
+                     (f"%{args.episode}%",))
+    if len(eps) != 1:
+        print(f"「{args.episode}」對到 {len(eps)} 集：{[e[1] for e in eps][:5]}，請寫得更精確")
+        return 1
+    ep_id, stem, season, episode, title = eps[0]
+    cues = [tuple(r) for r in db.execute(
+        "SELECT idx, start_s, end_s, text FROM cues WHERE episode_id = ? ORDER BY idx", (ep_id,))]
+    if args.text:
+        hit = still.match_cues(cues, args.text)
+    else:
+        at = _clock(args.at)
+        hit = [c for c in cues if c[1] <= at < c[2]] or [min(cues, key=lambda c: abs(c[1] - at))]
+    if not hit:
+        print(f"{stem} 找不到含「{args.text}」的字幕")
+        return 1
+    start, end = hit[0][1], hit[-1][2]
+    text = args.caption.replace(" / ", "\n") if args.caption else "\n".join(c[3] for c in hit)
+    unit = args.title or still.segment_title(title, start, cues[-1][2])
+    source = still.source_line(args.speaker, season, episode, unit, start)
+
+    service = build("drive", "v3", credentials=drive.load_credentials(TOKEN_PATH.read_text()),
+                    cache_discovery=False)
+    name = drive._escape_query_value(f"{stem}.mp4")
+    videos = service.files().list(q=f"name = '{name}' and trashed = false", fields="files(id)",
+                                  supportsAllDrives=True, includeItemsFromAllDrives=True).execute()["files"]
+    if not videos:
+        print(f"Drive 上找不到 {stem}.mp4")
+        return 1
+    token = drive.mint_readonly_access_token(drive.load_credentials(TOKEN_PATH.read_text()))
+    times = still.frame_times(start, end, args.count, args.step, args.window)
+    s = int(start)
+    paths = still.render_stills(
+        url=f"https://www.googleapis.com/drive/v3/files/{videos[0]['id']}?alt=media", token=token,
+        times=times, lines=still.caption_lines(text), source=source, out_dir=Path(args.out),
+        prefix=f"S{season:02d}ep{episode:03d}_{s // 60}m{s % 60:02d}s", font=args.font)
+    print(f"{source}\n字幕：{text.replace(chr(10), ' / ')}")
+    for i, (p, t) in enumerate(zip(paths, times), 1):
+        print(f"  {i}. {t:7.2f}s  {p}")
+    print(f"  挑選總覽：{paths[0].with_name(paths[0].name.rsplit('_', 1)[0] + '_contact.png')}")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="bob", description="海綿寶寶金句庫")
     parser.add_argument("--db", help="改用本機 SQLite 檔（預設連 Turso）")
@@ -537,13 +588,26 @@ def main(argv=None) -> int:
     scan.add_argument("--model", default="haiku")
     scan.add_argument("--only", default="", help="只處理檔名含此字串的集數")
     scan.add_argument("--dry-run", action="store_true", help="只確認、不改寫 Drive")
+    st = sub.add_parser("still", help="抓台詞畫面，下方加字幕與出處，一次出多張候選")
+    st.add_argument("episode", help="集名片段，例如 ep161 或 月球遊記")
+    where = st.add_mutually_exclusive_group(required=True)
+    where.add_argument("--text", help="台詞片段（忽略標點，可跨句）")
+    where.add_argument("--at", help="時間點 m:ss，取該時間的字幕")
+    st.add_argument("--speaker", default="", help="說話者；字幕沒標，從畫面與前後文判斷後填入")
+    st.add_argument("--title", default="", help="單元名，預設依時間點從集名自動取")
+    st.add_argument("--caption", default="", help="改寫字幕文字，用「 / 」換行")
+    st.add_argument("--count", type=int, default=6, help="候選張數")
+    st.add_argument("--step", type=float, default=0.5, help="候選間隔秒數")
+    st.add_argument("--window", type=float, default=3.0, help="只在台詞前後幾秒內取")
+    st.add_argument("--out", default=str(ROOT / "scratch" / "stills"), help="輸出資料夾（預設不進 git）")
+    st.add_argument("--font", default=None, help="中文字型檔路徑")
     audit = sub.add_parser("audit", help="彙整字幕審計結果與標籤提案")
     audit.add_argument("--top", type=int, default=30)
     args = parser.parse_args(argv)
     if args.cmd in ("reseg", "fix", "index") or (args.cmd == "scan" and not args.dry_run):
         args.folder = validate_folder_id(args.folder)
     return {"reseg": cmd_reseg, "fix": cmd_fix, "index": cmd_index, "ask": cmd_ask, "audit": cmd_audit,
-            "refs": cmd_refs, "scan": cmd_scan}[args.cmd](args)
+            "refs": cmd_refs, "scan": cmd_scan, "still": cmd_still}[args.cmd](args)
 
 
 if __name__ == "__main__":
