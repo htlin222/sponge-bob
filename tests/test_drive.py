@@ -269,3 +269,39 @@ def test_with_retry_gives_up_and_reports_which_call_failed():
 
     with pytest.raises(d.DriveError, match="查詢同名檔案"):
         d.with_retry(always_broken, "查詢同名檔案 x.srt")
+
+
+def _http_error(status):
+    from googleapiclient.errors import HttpError
+    from httplib2 import Response
+    return HttpError(Response({"status": status}), b"{}")
+
+
+def test_with_retry_recovers_from_drive_server_error():
+    # 實測踩過：bob scan 寫回 320 集寫到一半，下載撞到 Drive 的 500 Unknown Error
+    from psr import drive as d
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise _http_error(500)
+        return "ok"
+
+    d._RETRY_DELAYS = (0, 0)
+    assert d.with_retry(flaky, "測試") == "ok"
+
+
+def test_with_retry_does_not_retry_client_errors():
+    from googleapiclient.errors import HttpError
+    from psr import drive as d
+    calls = {"n": 0}
+
+    def missing():
+        calls["n"] += 1
+        raise _http_error(404)
+
+    d._RETRY_DELAYS = (0, 0)
+    with pytest.raises(HttpError):
+        d.with_retry(missing, "測試")
+    assert calls["n"] == 1

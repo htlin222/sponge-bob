@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
 # 設計文件 §10：drive.readonly 讓 token 讀得到使用者能看到的任何檔案（包含
@@ -84,7 +85,10 @@ def with_retry(call, what: str):
     for attempt, delay in enumerate((*_RETRY_DELAYS, None)):
         try:
             return call()
-        except (BrokenPipeError, ConnectionError, TimeoutError, OSError) as exc:
+        except (BrokenPipeError, ConnectionError, TimeoutError, OSError, HttpError) as exc:
+            # Drive 偶爾回 500「Unknown Error」或 429；4xx 是請求本身錯，重試也沒用
+            if isinstance(exc, HttpError) and exc.resp.status < 500 and exc.resp.status != 429:
+                raise
             last = exc
             if delay is None:
                 break

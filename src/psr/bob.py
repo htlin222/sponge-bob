@@ -651,8 +651,9 @@ def cmd_scan(args) -> int:
     known = quotedb.episode_fixes(db)
     new_rows = [(stem, w, r, "scan") for stem, pairs in by_stem.items() for w, r in pairs.items()
                 if (w, r) not in known.get(stem, [])]
-    stems = sorted({stem for stem, *_ in new_rows})
-    print(f"新增單集修正 {len(new_rows)} 筆、影響 {len(stems)} 集")
+    print(f"新增單集修正 {len(new_rows)} 筆、影響 {len({stem for stem, *_ in new_rows})} 集")
+    # 寫回所有有修正的集數，已經套用過的不會變：中途失敗重跑就能補完
+    stems = sorted(by_stem)
     if args.dry_run:
         for row in new_rows[:40]:
             print(f"  {row[0][-24:]}  {row[1]}→{row[2]}")
