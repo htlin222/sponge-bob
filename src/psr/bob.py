@@ -85,6 +85,7 @@ def cmd_fix(args) -> int:
     pending = [f for f in files
                if state.get(f["name"].removesuffix(SRT_SUFFIX)) != (f.get("md5Checksum"), version)]
     print(f"字幕 {len(files)} 集，已修正 {len(files) - len(pending)}，待修正 {len(pending)}（版本 {version}）")
+    pending = [f for f in pending if args.only in f["name"]]
     if args.limit:
         pending = pending[:args.limit]
 
@@ -268,6 +269,7 @@ def cmd_index(args) -> int:
         pending.append((f, meta))
     print(f"字幕 {len(files)} 集，已修正 {len(ready)}，已標記 {len(ready) - len(pending)}"
           f"（其中只更新文字 {refreshed}），待標記 {len(pending)}（版本 {version}）")
+    pending = [(f, meta) for f, meta in pending if args.only in f["name"]]
     if args.limit:
         pending = pending[:args.limit]
 
