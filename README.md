@@ -7,7 +7,7 @@
 [![health](https://github.com/htlin222/sponge-bob/actions/workflows/health.yml/badge.svg)](https://github.com/htlin222/sponge-bob/actions/workflows/health.yml)
 
 建立在 [polish-screen-record](https://github.com/htlin222/polish-screen-record) 的架構上：**先斷句、再定時**，讓 LLM 永遠碰不到時間碼。
-這個 repo 把它從「一個 issue 一支影片」改成「一個資料夾 228 集」。
+這個 repo 把它從「一個 issue 一支影片」改成「一個資料夾整批處理」（目前 320 集全部完成），再把字幕整理成可語意搜尋的金句庫 `bob`。
 
 ```
 GitHub Actions（排程 / 手動）
@@ -20,7 +20,9 @@ GitHub Actions（排程 / 手動）
   ├─ 加標點 ── DeepSeek 只插入標點，去標點後須與原文逐字相同
   ├─ 對回時間 → 修整 → 驗證 ── 純函式
   │
-  └─ 寫回 Drive ── <集名>.zh-Hant.srt 放在影片旁邊，最後才寫（存在 = 這集完成）
+  ├─ 寫回 Drive ── <集名>.zh-Hant.srt 放在影片旁邊，最後才寫（存在 = 這集完成）
+  │
+  └─ library workflow（batch 成功後）── 修正誤聽 → 標記金句 → 建向量，寫進 Turso
 ```
 
 ## 跟 polish-screen-record 的差異
@@ -131,7 +133,22 @@ uv run bob still ep161 --text "開玉米罐" --speaker 珊迪  # 台詞截圖＋
 - 好引用程度 1–5，2 分以下不存。改 prompt（`quotes.PROMPT_VERSION`）或分類表會改變 index 版本，下次 `bob index` 整批重標；字幕重做（md5 改變）的集數也會自動重標；若只是修正改了字、編號與時間不變，`bob index` 只就地更新台詞文字，不重標。
 - **搜尋**：每段金句的「使用情境」用本機的 `bge-small-zh`（fastembed／ONNX，免費離線）嵌入成 512 維向量，存在 Turso 的 `quote_vecs`，查詢時用 libSQL 的 `vector_distance_cos` 取最近的幾段。只嵌入情境不嵌入台詞：台詞的字面（玉米、罐頭）會把向量拉離處境，實測較差。查詢寫成情境的口吻（「朋友怕得不敢嘗試」）效果最好。原本「模型轉標籤 → SQL → 模型挑選」要 12 秒，其中兩次 `claude -p` 各 6 秒，大多是 CLI 啟動開銷；現在預設不叫模型，約 1 秒。
 - **台詞截圖 `bob still`**：以台詞中點為中心每 0.5 秒抓一格、共 6 張（都在台詞前後 3 秒內）；台詞長過 3 秒時改成均分整段台詞，6 張才不會擠在中間。經 Drive API 串流取單格、不下載整部影片，原始畫面快取在 `scratch/stills/_frames/`，只改字幕或說話者時重排不用再抓。片源的黑邊自動裁掉（6 張取同一塊，尺寸一致）。每張下方加字幕與「說話者｜《海綿寶寶》Sxx epNNN〈集名〉m:ss」，另附編號總覽圖讓人挑。集名有兩個單元名時預設印完整名稱、不猜是哪一段：檔名的單元順序常與片中相反，也有同一集兩個譯名的（〈海神王的派對／崔頓大顯神通〉），要單一名稱用 `--title`。輸出在 `scratch/stills/`（不進 git）。Claude Code 的用法見 `.claude/skills/spongebob-still/`。
+- **DeepSeek 校準**：同樣 prompt 下 DeepSeek 給星偏大方（★4+ 47%，Haiku 29%）、使用情境偏短（12–16 字），所以用 DeepSeek 時另加校準（`quotes.system_prompt`），校準後 ★4+ 29%、情境 24–28 字。改這段後用 `library` 的 `compare` 模式重測。
 - 連線設定：`~/.config/sponge-bob/turso.json`（`{"url","token"}`）或 `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`；`--db 檔案.sqlite` 改用本機 SQLite。
+
+### 資料庫
+
+| 表 | 內容 |
+| --- | --- |
+| `episodes`、`cues` | 每集的 stem／季／集／Drive ID，與全部字幕（`idx`、`start_s`、`end_s`、`text`）；`bob grep`、`bob ctx` 查這裡 |
+| `quotes` | 金句段落：`cue_from..cue_to`、`speaker`（模型猜的）、`quotability` 1–5、`use_when` |
+| `tags`、`quote_tags` | `taxonomy.yml` 的封閉標籤與金句的對應 |
+| `quote_vecs` | `use_when` 的 512 維向量，`bob ask` 用 |
+| `srt_fixes`、`fix_log`、`episode_fixes`、`scan_verdicts`、`refs` | 誤聽修正的紀錄、單集對照表、`bob scan` 判定快取、台詞參考庫 |
+| `audit_issues`、`tag_suggestions` | 標記時模型順手回報的字幕問題與新標籤建議 |
+| `punctuations`、`resegments` | `bob reseg` 的加標點快取與重斷句紀錄 |
+
+`bob backup` 把這些表整份複製成本機 SQLite（含 rowid 與索引），可直接 `--db` 指定來離線查。
 
 ## 已知限制
 
