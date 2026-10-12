@@ -131,3 +131,24 @@ def test_grep_cues_matches_any_term_in_episode_order():
 def test_grep_cues_treats_percent_literally():
     db = _db()
     assert [r[2] for r in quotedb.grep_cues(db, ["%"])] == ["100%完美"]
+
+
+def test_dump_copies_every_table_row_for_row(tmp_path):
+    db = _db(_quote(1, 1, "我準備好了", "上班前", ("situations", "上班")))
+    (qid, *_), = quotedb.quote_docs(db)
+    quotedb.save_vectors(db, [(qid, "d", [1.0, 0.5])])
+    dest = tmp_path / "backup.sqlite"
+    counts = quotedb.dump(db, dest, page=2)  # 每頁 2 筆，cues 3 筆要翻頁
+
+    import sqlite3
+    out = sqlite3.connect(dest)
+    for table in ("episodes", "cues", "quotes", "quote_tags", "quote_vecs", "tags"):
+        want = db.execute(f"SELECT * FROM {table} ORDER BY rowid")
+        assert out.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == want, table
+        assert counts[table] == len(want)
+
+
+def test_turso_blobs_decode_without_base64_padding():
+    # Hrana 回傳的 BLOB 是不補 = 的 base64：b"\x01\x02" 是 "AQI"
+    assert quotedb._decode({"type": "blob", "base64": "AQI"}) == b"\x01\x02"
+    assert quotedb._decode({"type": "blob", "base64": "AQI="}) == b"\x01\x02"

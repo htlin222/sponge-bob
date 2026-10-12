@@ -1,0 +1,25 @@
+name: setup
+description: 安裝 uv 與依賴，還原 Drive OAuth token（library / health / backup 共用）
+inputs:
+  oauth-token:
+    description: GOOGLE_OAUTH_TOKEN secret 的內容
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+
+    - name: 安裝依賴
+      shell: bash
+      run: uv sync --frozen
+
+    - name: 還原 Drive token
+      shell: bash
+      env:
+        GOOGLE_OAUTH_TOKEN: ${{ inputs.oauth-token }}
+      run: |
+        mkdir -p "$HOME/.config/polish-screen-record"
+        printf '%s' "$GOOGLE_OAUTH_TOKEN" > "$HOME/.config/polish-screen-record/token.json"
+        chmod 600 "$HOME/.config/polish-screen-record/token.json"

@@ -1,0 +1,41 @@
+name: backup
+
+# 每週把整個金句庫（字幕、金句、向量、審計紀錄）複製成 SQLite，gzip 後放 Drive 的
+# _psr/backups/，保留最近 8 份。內容有版權，不放 repo 也不放 artifact（公開 repo 人人可下載）。
+on:
+  schedule:
+    - cron: "23 2 * * 0" # 每週日 UTC 02:23
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+        with:
+          oauth-token: ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+
+      - name: 備份到 Drive
+        env:
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: uv run bob backup --keep 8
+
+      - name: 開 issue 通知
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="每週備份失敗"
+          if [ -z "$(gh issue list --state open --search "in:title $title" --json number -q '.[].number')" ]; then
+            gh issue create --title "$title" --body "排程備份失敗：$RUN_URL"
+          fi

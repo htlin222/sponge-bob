@@ -1,0 +1,76 @@
+name: library
+
+# batch 產出新字幕之後接著做：修正誤聽 → 標記金句 → 建語意向量，新集數就搜得到。
+# 本機的 bob 走 `claude -p`（訂閱額度），runner 上沒有，所以這裡用 DeepSeek。
+# 每一步都只處理還沒做過的集數，沒有新字幕時幾秒就結束。
+#
+# 公開 repo 的 log 人人看得到：fix 加 --quiet 不印字幕片段，index 只印計數，
+# compare 只印統計數字。
+on:
+  workflow_run:
+    workflows: [batch]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "update = 處理新字幕；compare = 只比較 DeepSeek 與現有金句（不寫入）"
+        type: choice
+        options: [update, compare]
+        default: update
+      episodes:
+        description: "compare 用：集名片段，空白分隔"
+        default: "ep161 ep098 ep194 ep067 ep229"
+      limit:
+        description: "update 用：本輪最多幾集（0 = 全部）"
+        default: "0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: library
+  cancel-in-progress: false
+
+jobs:
+  library:
+    # batch 失敗就不接著跑：字幕可能只寫了一半
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MODEL: deepseek-v4-flash
+      DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.fastembed
+      # workflow 輸入一律走環境變數，不內插進 run: 區塊
+      LIMIT: ${{ inputs.limit || '0' }}
+      EPISODES: ${{ inputs.episodes }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+        with:
+          oauth-token: ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+
+      - name: 快取語意向量模型
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.fastembed
+          key: fastembed-bge-small-zh-v1.5
+
+      - name: 修正誤聽
+        if: inputs.mode != 'compare'
+        run: uv run bob fix --model "$MODEL" --quiet --limit "$LIMIT"
+
+      - name: 標記金句並建語意向量
+        if: inputs.mode != 'compare'
+        run: uv run bob index --model "$MODEL" --limit "$LIMIT"
+
+      - name: 比較 DeepSeek 與現有金句（只印統計）
+        if: inputs.mode == 'compare'
+        run: |
+          read -ra episodes <<< "$EPISODES"
+          uv run python scripts/compare_index.py "${episodes[@]}" --model "$MODEL"

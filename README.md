@@ -4,6 +4,7 @@
 
 [![ci](https://github.com/htlin222/sponge-bob/actions/workflows/ci.yml/badge.svg)](https://github.com/htlin222/sponge-bob/actions/workflows/ci.yml)
 [![batch](https://github.com/htlin222/sponge-bob/actions/workflows/batch.yml/badge.svg)](https://github.com/htlin222/sponge-bob/actions/workflows/batch.yml)
+[![health](https://github.com/htlin222/sponge-bob/actions/workflows/health.yml/badge.svg)](https://github.com/htlin222/sponge-bob/actions/workflows/health.yml)
 
 建立在 [polish-screen-record](https://github.com/htlin222/polish-screen-record) 的架構上：**先斷句、再定時**，讓 LLM 永遠碰不到時間碼。
 這個 repo 把它從「一個 issue 一支影片」改成「一個資料夾 228 集」。
@@ -76,6 +77,7 @@ DRIVE_FOLDER_ID=... DEEPSEEK_API_KEY=... DRY_RUN=true uv run psr batch --limit 1
 | `DEEPSEEK_API_KEY` | 加標點 | — |
 | `DRIVE_FOLDER_ID` | 要處理的資料夾 | — |
 | `GROQ_API_KEY` | 選用，Colab 拿不到 GPU 時的備援 | — |
+| `TURSO_DATABASE_URL`、`TURSO_AUTH_TOKEN` | 金句庫（library、health、backup 用） | — |
 
 ### 為什麼 Drive token 會「每週壞一次」，以及修法
 
@@ -91,9 +93,19 @@ OAuth 同意畫面停在 **測試中** 時，Google 發的 refresh token **7 天
 
 之後只有在 token 被撤銷或換帳號時才需要重做第 3、4 步。
 
+## 其他排程
+
+| Workflow | 何時 | 做什麼 |
+| --- | --- | --- |
+| `library` | batch 成功後；或手動 | 新字幕修正誤聽 → 標記金句 → 建語意向量（DeepSeek，只處理新集數）。手動選 `compare` 只比較 DeepSeek 與現有金句的重疊程度，不寫入 |
+| `health` | 每天 | 檢查 Drive token、Turso、DeepSeek；失敗就開 issue（已有未關閉的就不重開） |
+| `backup` | 每週日 | 整庫複製成 SQLite、gzip 後放 Drive 的 `_psr/backups/`，保留 8 份 |
+
+公開 repo 的 Actions log 與 artifact 人人看得到，所以這些 workflow 只印計數與統計，字幕、台詞與備份都只進 Drive／Turso。
+
 ## 金句庫 `bob`
 
-把字幕變成「生活大小事都能引用」的海綿寶寶金句庫。**在本機跑**：模型走 `claude -p --model haiku`（訂閱額度），資料存在 Turso（台詞有版權，不進公開 repo）。
+把字幕變成「生活大小事都能引用」的海綿寶寶金句庫。**在本機跑**：模型走 `claude -p --model haiku`（訂閱額度），資料存在 Turso（台詞有版權，不進公開 repo）。`--model deepseek-v4-flash` 改走 DeepSeek API，`library` workflow 用這個處理新集數。
 
 ```bash
 uv run bob reseg            # 從 _psr/ 的原始轉錄用 Haiku 重新加標點與換人記號、重新斷句（--only、--redo）
@@ -102,6 +114,8 @@ uv run bob index            # 標記已修正、尚未標記或內容已變的�
 uv run bob ask "週一不想上班"  # 語意搜尋 → 台詞、集數與時間碼，約 1 秒（-n 筆數；--pick 再讓 Haiku 挑並說明）
 uv run bob ctx ep161 6:36   # 某集某時間前後的字幕，看這段在演什麼
 uv run bob grep 大巨蛋 市長   # 字幕關鍵字搜尋（含任一詞）；具體名詞語意搜尋找不到時用
+uv run bob backup           # 整庫備份成 SQLite，gzip 後放 Drive 的 _psr/backups/（--keep 8）
+uv run bob health           # 檢查 Drive token、Turso、DeepSeek
 uv run bob embed            # 補齊／更新語意向量（bob index 結束時自動做）
 uv run bob audit            # 字幕錯字/人名/幻覺統計、Haiku 提的新標籤
 uv run bob refs refs.json   # 載入台灣配音版台詞參考庫（[{phrase, kind, source}]，只存 Turso）

@@ -1,0 +1,47 @@
+name: health
+
+# 每天檢查 Drive token、Turso、DeepSeek 還能不能用。Drive token 失效（invalid_grant）時
+# batch 會連續好幾輪安靜地失敗；這裡失敗就開一個 issue，GitHub 會寄通知。
+on:
+  schedule:
+    - cron: "41 1 * * *" # 每天 UTC 01:41（台灣 09:41）
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+        with:
+          oauth-token: ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+
+      - name: 健康檢查
+        env:
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: uv run bob health
+
+      - name: 開 issue 通知
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="健康檢查失敗"
+          # 已經有未關閉的同名 issue 就不再開，免得每天一封
+          if [ -z "$(gh issue list --state open --search "in:title $title" --json number -q '.[].number')" ]; then
+            gh issue create --title "$title" --body "排程檢查失敗：$RUN_URL
+
+          Drive 出現 invalid_grant：本機跑 \`uv run python -u scripts/reauth.py\`，再
+          \`gh secret set GOOGLE_OAUTH_TOKEN < ~/.config/polish-screen-record/token.json\`。
+          修好後手動重跑 health workflow 確認，再關掉這個 issue。"
+          fi

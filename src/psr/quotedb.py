@@ -187,7 +187,8 @@ def _decode(v: dict):
     if kind == "float":
         return float(v["value"])
     if kind == "blob":
-        return base64.b64decode(v["base64"])
+        data = v["base64"]  # Hrana 不補 = padding
+        return base64.b64decode(data + "=" * (-len(data) % 4))
     return v["value"]
 
 
@@ -416,6 +417,36 @@ def grep_cues(db, terms: list[str], limit: int = 200) -> list[tuple[str, float, 
 
 def _escape_like(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def dump(db, dest, page: int = 2000) -> dict[str, int]:
+    """把整個資料庫逐表分頁複製成本機 SQLite 檔（備份用），回傳每張表的筆數。
+
+    保留 rowid，向量 BLOB 原樣複製；索引在資料寫完後才建，比較快。
+    """
+    import sqlite3
+
+    out = sqlite3.connect(dest)
+    objects = db.execute("""SELECT type, name, sql FROM sqlite_master
+        WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'libsql_%' ORDER BY name""")
+    tables = [(name, sql) for kind, name, sql in objects if kind == "table"]
+    counts = {}
+    for name, sql in tables:
+        out.execute(sql)
+        names = [f'"{r[1]}"' for r in out.execute(f'PRAGMA table_info("{name}")')]
+        cols = ", ".join(names)
+        insert = f'INSERT INTO "{name}" (rowid, {cols}) VALUES ({", ".join("?" * (len(names) + 1))})'
+        last, counts[name] = -(2 ** 63), 0
+        while rows := db.execute(f'SELECT rowid, {cols} FROM "{name}" WHERE rowid > ? ORDER BY rowid LIMIT ?',
+                                 (last, page)):
+            out.executemany(insert, rows)
+            last, counts[name] = rows[-1][0], counts[name] + len(rows)
+    for kind, _, sql in objects:
+        if kind == "index":
+            out.execute(sql)
+    out.commit()
+    out.close()
+    return counts
 
 
 def load_refs(db, refs: list[dict]) -> None:

@@ -6,18 +6,24 @@
     bob ask "明天要上台報告好緊張"          語意搜尋最貼切的台詞（--pick 再讓模型挑）
     bob embed                             補齊／更新金句的語意向量（bob index 結束時也會做）
     bob ctx ep161 6:36                    列出某集某時間前後的字幕，看這段在演什麼
+    bob grep 大巨蛋 市長                   字幕關鍵字搜尋（含任一詞）
+    bob backup [--keep 8]                 整庫備份到 Drive 的 _psr/backups/
+    bob health                            檢查 Drive token、Turso、DeepSeek
     bob audit                             彙整 Haiku 審計出的字幕問題與標籤提案
     bob refs refs.json                    載入台灣配音版台詞參考庫（只存 Turso）
     bob scan [--dry-run]                  拼音比對找誤聽，只把嫌疑交給模型確認
     bob still ep161 --text "開玉米罐"       抓台詞畫面加字幕與出處，一次出 6 張候選
 
-全部在本機執行：模型走 `claude -p`（訂閱額度），資料寫進 Turso。
+模型預設走本機 `claude -p`（訂閱額度）；`--model deepseek-v4-flash` 改走 DeepSeek API，
+GitHub Actions 上的 library workflow 用這個。資料寫進 Turso。
 """
 
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
+import shutil
 import json
 import os
 import sys
@@ -27,7 +33,7 @@ from pathlib import Path
 
 from googleapiclient.discovery import build
 
-from psr import claude_cli, cleanup, drive, fix, glossary, quotedb, quotes, refaudit, semantic, still
+from psr import backup, cleanup, drive, fix, glossary, llm, quotedb, quotes, refaudit, semantic, still
 from psr import punctuate as punct_mod
 from psr.batch import WORK_SUBFOLDER, validate_folder_id
 from psr.cli import TOKEN_PATH, _build_cues
@@ -71,7 +77,7 @@ def _fix_episode(text: str, gloss: glossary.Glossary, model: str, local: list[tu
     if local:  # `bob scan` 確認過的單集修正
         cues, scanned = fix.apply_glossary(cues, list(local))
         known += scanned
-    raw = claude_cli.ask(fix.user_prompt(cues), system=fix.system_prompt([e.correct for e in gloss.entries]),
+    raw = llm.ask(fix.user_prompt(cues), system=fix.system_prompt([e.correct for e in gloss.entries]),
                          schema=fix.SCHEMA, model=model)
     cues, applied, skipped = fix.apply_fixes(cues, raw.get("fixes", []))
     return cues, known + applied, skipped
@@ -133,7 +139,8 @@ def cmd_fix(args) -> int:
                 failures += 1
                 print(f"[{n}/{len(jobs)}] {label} 失敗：{e}", file=sys.stderr, flush=True)
                 continue
-            sample = "、".join(f"{x.wrong}→{x.right}" for x in applied[:4])
+            # 公開 repo 的 Actions log 人人看得到：--quiet 不印字幕片段
+            sample = "" if args.quiet else "、".join(f"{x.wrong}→{x.right}" for x in applied[:4])
             print(f"[{n}/{len(jobs)}] {label}：修正 {len(applied)}、擋下 {len(skipped)}  {sample}", flush=True)
     return 1 if failures else 0
 
@@ -151,8 +158,8 @@ def _haiku_punctuate(chunk: str, model: str, attempts: int = 2) -> str | None:
     切成兩半各自重試——塊越小模型越守規矩；切到不能再切仍失敗才回 None，退回原文。"""
     for _ in range(attempts):
         try:
-            out = claude_cli.ask(chunk, system=punct_mod.SYSTEM, schema=PUNCT_SCHEMA, model=model)["text"]
-        except claude_cli.ClaudeError:
+            out = llm.ask(chunk, system=punct_mod.SYSTEM, schema=PUNCT_SCHEMA, model=model)["text"]
+        except llm.ERRORS:
             continue
         out = punct_mod.fullwidth(to_traditional(out.strip()))
         if punct_mod.similarity(chunk, out) >= punct_mod.MIN_SIMILARITY:
@@ -246,7 +253,7 @@ def _label(ep: quotes.EpisodeMeta) -> str:
 
 def _tag_episode(text: str, meta: quotes.EpisodeMeta, taxonomy, model: str):
     cues = parse(text)
-    raw = claude_cli.ask(quotes.user_prompt(meta, cues), system=quotes.SYSTEM_PROMPT,
+    raw = llm.ask(quotes.user_prompt(meta, cues), system=quotes.SYSTEM_PROMPT,
                          schema=quotes.output_schema(taxonomy), model=model)
     return cues, quotes.accept(raw, cues, taxonomy)
 
@@ -341,7 +348,7 @@ def cmd_ask(args) -> int:
         return 1
     if args.pick:
         listing = "\n\n".join(f"[{c['id']}] {c['speaker']}：{c['text']}\n情境：{c['use_when']}" for c in hits)
-        picks = claude_cli.ask(f"使用者的處境：{args.situation}\n\n候選台詞：\n{listing}",
+        picks = llm.ask(f"使用者的處境：{args.situation}\n\n候選台詞：\n{listing}",
                                system=PICK_SYSTEM, model=args.model, schema={
             "type": "object",
             "properties": {"picks": {"type": "array", "maxItems": 5, "items": {
@@ -385,6 +392,58 @@ def cmd_grep(args) -> int:
     return 0
 
 
+def cmd_backup(args) -> int:
+    from datetime import date
+
+    service = build("drive", "v3", credentials=drive.load_credentials(TOKEN_PATH.read_text()),
+                    cache_discovery=False)
+    folder = drive.ensure_folder(service, backup.FOLDER, drive.ensure_folder(service, WORK_SUBFOLDER, args.folder))
+    name = backup.name_for(date.today())
+    with tempfile.TemporaryDirectory() as tmp:
+        raw, packed = Path(tmp) / "bob.sqlite", Path(tmp) / name
+        counts = quotedb.dump(quotedb.connect(args.db), raw)
+        with raw.open("rb") as src, gzip.open(packed, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        drive.find_or_create(service, name, folder, str(packed), "application/gzip")
+        size = packed.stat().st_size
+    print(f"備份 {name}（{size / 1e6:.1f} MB）：" + "、".join(f"{t} {n}" for t, n in sorted(counts.items())))
+    names = {f["name"]: f["id"] for f in drive.list_children(service, folder)}
+    for old in backup.to_trash(list(names), args.keep):
+        service.files().update(fileId=names[old], body={"trashed": True}).execute()
+        print(f"移到垃圾桶：{old}")
+    return 0
+
+
+def cmd_health(args) -> int:
+    """Drive token、Turso、DeepSeek 都還能用嗎？任一項失敗就回傳 1（排程用來開 issue）。"""
+    def drive_ok():
+        service = build("drive", "v3", credentials=drive.load_credentials(TOKEN_PATH.read_text()),
+                        cache_discovery=False)
+        service.files().get(fileId=args.folder, fields="id", supportsAllDrives=True).execute()
+        return "token 有效、資料夾可讀"
+
+    def turso_ok():
+        (n,), = quotedb.connect(args.db).execute("SELECT count(*) FROM episodes")
+        return f"{n} 集"
+
+    def deepseek_ok():
+        if not os.environ.get("DEEPSEEK_API_KEY"):
+            return "未設定 DEEPSEEK_API_KEY，略過"
+        from openai import OpenAI
+
+        models = OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url=llm.DEEPSEEK_URL).models.list()
+        return f"可用模型 {len(models.data)} 個"
+
+    failed = 0
+    for label, check in (("Drive", drive_ok), ("Turso", turso_ok), ("DeepSeek", deepseek_ok)):
+        try:
+            print(f"✓ {label}：{check()}")
+        except Exception as e:  # 健康檢查要把每一項都跑完
+            failed += 1
+            print(f"✗ {label}：{type(e).__name__}: {str(e)[:300]}")
+    return 1 if failed else 0
+
+
 def cmd_audit(args) -> int:
     db = quotedb.connect(args.db)
     print("## 審計問題（依類型）")
@@ -425,7 +484,7 @@ SCAN_BATCH = 25  # 每題帶前後文，批次放小一點
 
 
 def _confirm(batch, model, around=None):
-    raw = claude_cli.ask(refaudit.confirm_prompt(batch, around), system=refaudit.CONFIRM_SYSTEM,
+    raw = llm.ask(refaudit.confirm_prompt(batch, around), system=refaudit.CONFIRM_SYSTEM,
                          schema=refaudit.CONFIRM_SCHEMA, model=model)
     return {v["id"]: v for v in raw.get("verdicts", []) if isinstance(v.get("id"), int)}
 
@@ -486,7 +545,7 @@ def cmd_scan(args) -> int:
             batch = futures[fut]
             try:
                 verdicts = fut.result()
-            except claude_cli.ClaudeError as e:
+            except llm.ERRORS as e:
                 print(f"[{n}/{len(batches)}] 失敗：{e}", file=sys.stderr, flush=True)
                 continue
             rows = []
@@ -605,6 +664,8 @@ def main(argv=None) -> int:
         p.add_argument("--only", default="", help="只處理檔名含此字串的集數")
         if name == "reseg":
             p.add_argument("--redo", action="store_true", help="已重新斷句過的也重做")
+        if name == "fix":
+            p.add_argument("--quiet", action="store_true", help="不印修正範例（公開的 Actions log 用）")
     ask = sub.add_parser("ask", help="描述你的處境，找海綿寶寶台詞")
     ask.add_argument("situation")
     ask.add_argument("-n", "--top", type=int, default=10, help="列出幾段（不加 --pick 時）")
@@ -640,14 +701,21 @@ def main(argv=None) -> int:
     st.add_argument("--window", type=float, default=3.0, help="只在台詞前後幾秒內取")
     st.add_argument("--out", default=str(ROOT / "scratch" / "stills"), help="輸出資料夾（預設不進 git）")
     st.add_argument("--font", default=None, help="中文字型檔路徑")
+    for name, help_text in (("backup", "整個金句庫備份成 SQLite，gzip 後放 Drive 的 _psr/backups/"),
+                            ("health", "檢查 Drive token、Turso、DeepSeek 是否可用")):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("--folder", default=os.environ.get("DRIVE_FOLDER_ID", ""))
+        if name == "backup":
+            p.add_argument("--keep", type=int, default=8, help="保留最近幾份")
     audit = sub.add_parser("audit", help="彙整字幕審計結果與標籤提案")
     audit.add_argument("--top", type=int, default=30)
     args = parser.parse_args(argv)
-    if args.cmd in ("reseg", "fix", "index") or (args.cmd == "scan" and not args.dry_run):
+    if args.cmd in ("reseg", "fix", "index", "backup", "health") or (args.cmd == "scan" and not args.dry_run):
         args.folder = validate_folder_id(args.folder)
     return {"reseg": cmd_reseg, "fix": cmd_fix, "index": cmd_index, "ask": cmd_ask, "audit": cmd_audit,
             "refs": cmd_refs, "scan": cmd_scan, "still": cmd_still,
-            "embed": cmd_embed, "ctx": cmd_ctx, "grep": cmd_grep}[args.cmd](args)
+            "embed": cmd_embed, "ctx": cmd_ctx, "grep": cmd_grep,
+            "backup": cmd_backup, "health": cmd_health}[args.cmd](args)
 
 
 if __name__ == "__main__":
