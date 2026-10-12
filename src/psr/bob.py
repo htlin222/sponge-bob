@@ -3,7 +3,9 @@
     bob reseg [--limit N] [--only 集名片段] 用 Haiku 重新加標點與換人記號，重新斷句字幕
     bob fix [--limit N] [--workers 4]     照語音修正誤聽（同音字），改寫 Drive 上的字幕
     bob index [--limit N] [--workers 4]   用 Haiku 標記已修正的字幕
-    bob ask "明天要上台報告好緊張"          找出最適合引用的台詞
+    bob ask "明天要上台報告好緊張"          語意搜尋最貼切的台詞（--pick 再讓模型挑）
+    bob embed                             補齊／更新金句的語意向量（bob index 結束時也會做）
+    bob ctx ep161 6:36                    列出某集某時間前後的字幕，看這段在演什麼
     bob audit                             彙整 Haiku 審計出的字幕問題與標籤提案
     bob refs refs.json                    載入台灣配音版台詞參考庫（只存 Turso）
     bob scan [--dry-run]                  拼音比對找誤聽，只把嫌疑交給模型確認
@@ -25,7 +27,7 @@ from pathlib import Path
 
 from googleapiclient.discovery import build
 
-from psr import claude_cli, cleanup, drive, fix, glossary, quotedb, quotes, refaudit, still
+from psr import claude_cli, cleanup, drive, fix, glossary, quotedb, quotes, refaudit, semantic, still
 from psr import punctuate as punct_mod
 from psr.batch import WORK_SUBFOLDER, validate_folder_id
 from psr.cli import TOKEN_PATH, _build_cues
@@ -300,59 +302,78 @@ def cmd_index(args) -> int:
                 continue
             print(f"[{n}/{len(pending)}] {_label(meta)} {meta.title}：金句 {len(result.quotes)}、"
                   f"審計 {len(result.issues)}、丟棄 {result.rejected}、新標籤提案 {len(result.new_tags)}", flush=True)
+    _sync_vectors(db)
     return 1 if failures else 0
 
 
-PLAN_SYSTEM = """你幫使用者在《海綿寶寶》金句庫裡找台詞。把使用者描述的生活處境轉成搜尋條件：
-- 標籤只能從 schema 選項挑，挑最貼近的，每類 0–3 個。
-- characters 只在使用者點名角色時才填，否則留空（角色標籤會讓該角色的台詞全部加分）。
-- keywords：台詞或情境描述裡可能出現的 2–4 字詞，台灣用語，最多 8 個。"""
+def _sync_vectors(db) -> int:
+    """替還沒有向量、或台詞／情境改過的金句重算向量。"""
+    todo = semantic.stale(quotedb.quote_docs(db))
+    for i in range(0, len(todo), 256):
+        batch = todo[i:i + 256]
+        vecs = semantic.embed_docs([document for _, document, _ in batch])
+        quotedb.save_vectors(db, [(qid, d, v) for (qid, _, d), v in zip(batch, vecs)])
+        print(f"語意向量 {i + len(batch)}/{len(todo)}", flush=True)
+    return len(todo)
+
+
+def cmd_embed(args) -> int:
+    db = quotedb.connect(args.db)
+    quotedb.init(db, quotes.load_taxonomy(TAXONOMY_PATH))
+    print(f"更新 {_sync_vectors(db)} 段金句的語意向量")
+    return 0
+
 
 PICK_SYSTEM = """你是海綿寶寶通。從候選台詞中挑出最適合使用者此刻引用的 1–5 段，依推薦程度排序。
 why 用一句話說明為什麼適合（可以帶點幽默）。不適合的寧可不挑。"""
 
 
+def _stamp(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 60}:{s % 60:02d}"
+
+
 def cmd_ask(args) -> int:
-    taxonomy = quotes.load_taxonomy(TAXONOMY_PATH)
     db = quotedb.connect(args.db)
-    tag_props = {facet: {"type": "array", "items": {"enum": list(names)}, "maxItems": 3}
-                 for facet, names in taxonomy.facets.items()}
-    plan = claude_cli.ask(args.situation, system=PLAN_SYSTEM, model=args.model, schema={
-        "type": "object",
-        "properties": {**tag_props, "keywords": {"type": "array", "items": {"type": "string"},
-                                                  "maxItems": 8}},
-        "required": [*quotes.FACETS, "keywords"],
-    })
-    tags = [(facet, name) for facet in quotes.FACETS for name in plan.get(facet, [])]
-    candidates = quotedb.search(db, tags=tags, keywords=plan.get("keywords", []), limit=30)
-    if not candidates:
-        print("找不到相關台詞。")
+    hits = quotedb.nearest(db, semantic.embed_query(args.situation), limit=30 if args.pick else args.top)
+    if not hits:
+        print("金句還沒有語意向量，先跑 `bob embed`。")
         return 1
-    listing = "\n\n".join(f"[{c['id']}] {c['speaker']}：{c['text']}\n情境：{c['use_when']}"
-                          for c in candidates)
-    picks = claude_cli.ask(f"使用者的處境：{args.situation}\n\n候選台詞：\n{listing}",
-                           system=PICK_SYSTEM, model=args.model, schema={
-        "type": "object",
-        "properties": {"picks": {"type": "array", "maxItems": 5, "items": {
+    if args.pick:
+        listing = "\n\n".join(f"[{c['id']}] {c['speaker']}：{c['text']}\n情境：{c['use_when']}" for c in hits)
+        picks = claude_cli.ask(f"使用者的處境：{args.situation}\n\n候選台詞：\n{listing}",
+                               system=PICK_SYSTEM, model=args.model, schema={
             "type": "object",
-            "properties": {"id": {"type": "integer"}, "why": {"type": "string"}},
-            "required": ["id", "why"]}}},
-        "required": ["picks"],
-    })
-    by_id = {c["id"]: c for c in candidates}
-    shown = 0
-    for p in picks.get("picks", []):
-        c = by_id.get(p.get("id"))
-        if not c:
-            continue
-        shown += 1
-        start = int(c["start"])
-        print(f"\n{shown}. 「{c['text'].replace(chr(10), ' ')}」—— {c['speaker']}")
-        print(f"   S{c['season']:02d}E{c['episode']:03d}《{c['title']}》 {start // 60:02d}:{start % 60:02d}")
-        print(f"   {p.get('why', '')}")
-    if args.verbose:
-        print(f"\n搜尋條件：標籤 {tags}，關鍵字 {plan.get('keywords')}，候選 {len(candidates)} 筆")
-    return 0 if shown else 1
+            "properties": {"picks": {"type": "array", "maxItems": 5, "items": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}, "why": {"type": "string"}},
+                "required": ["id", "why"]}}},
+            "required": ["picks"],
+        })
+        by_id = {c["id"]: c for c in hits}
+        hits = [{**by_id[p["id"]], "why": p.get("why", "")} for p in picks.get("picks", []) if p.get("id") in by_id]
+    for n, c in enumerate(hits, 1):
+        print(f"{n}. 「{c['text'].replace(chr(10), ' / ')}」—— {c['speaker']}")
+        print(f"   S{c['season']:02d}E{c['episode']:03d}《{c['title']}》{_stamp(c['start'])}　"
+              f"★{c['quotability']}　{c.get('why') or c['use_when']}")
+    return 0 if hits else 1
+
+
+def cmd_ctx(args) -> int:
+    db = quotedb.connect(args.db)
+    eps = db.execute("SELECT id, stem, title FROM episodes WHERE stem LIKE ?", (f"%{args.episode}%",))
+    if len(eps) != 1:
+        print(f"「{args.episode}」對到 {len(eps)} 集：{[e[1] for e in eps][:5]}，請寫得更精確")
+        return 1
+    ep_id, stem, _ = eps[0]
+    at = _clock(args.at)
+    rows = db.execute("SELECT start_s, text FROM cues WHERE episode_id = ? AND start_s BETWEEN ? AND ? "
+                      "ORDER BY idx", (ep_id, at - args.span, at + args.span))
+    print(stem)
+    current = max((r[0] for r in rows if r[0] < at + 1), default=None)  # m:ss 涵蓋整秒
+    for start, text in rows:
+        print(f"{'▶' if start == current else ' '}{_stamp(start):>6} {text.replace(chr(10), ' ')}")
+    return 0
 
 
 def cmd_audit(args) -> int:
@@ -577,8 +598,14 @@ def main(argv=None) -> int:
             p.add_argument("--redo", action="store_true", help="已重新斷句過的也重做")
     ask = sub.add_parser("ask", help="描述你的處境，找海綿寶寶台詞")
     ask.add_argument("situation")
+    ask.add_argument("-n", "--top", type=int, default=10, help="列出幾段（不加 --pick 時）")
+    ask.add_argument("--pick", action="store_true", help="從前 30 段再讓模型挑 1–5 段並說明理由")
     ask.add_argument("--model", default="haiku")
-    ask.add_argument("-v", "--verbose", action="store_true")
+    sub.add_parser("embed", help="補齊／更新金句的語意向量")
+    ctx = sub.add_parser("ctx", help="列出某集某時間前後的字幕")
+    ctx.add_argument("episode", help="集名片段，例如 ep161 或 月球遊記")
+    ctx.add_argument("at", help="時間點 m:ss")
+    ctx.add_argument("--span", type=float, default=30, help="前後各幾秒")
     refs = sub.add_parser("refs", help="載入台灣配音版台詞參考庫（JSON：[{phrase, kind, source}]）")
     refs.add_argument("file")
     scan = sub.add_parser("scan", help="用拼音比對參考庫與全庫同音異寫找誤聽，只把嫌疑交給模型確認")
@@ -607,7 +634,8 @@ def main(argv=None) -> int:
     if args.cmd in ("reseg", "fix", "index") or (args.cmd == "scan" and not args.dry_run):
         args.folder = validate_folder_id(args.folder)
     return {"reseg": cmd_reseg, "fix": cmd_fix, "index": cmd_index, "ask": cmd_ask, "audit": cmd_audit,
-            "refs": cmd_refs, "scan": cmd_scan, "still": cmd_still}[args.cmd](args)
+            "refs": cmd_refs, "scan": cmd_scan, "still": cmd_still,
+            "embed": cmd_embed, "ctx": cmd_ctx}[args.cmd](args)
 
 
 if __name__ == "__main__":

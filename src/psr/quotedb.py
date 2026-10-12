@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import sqlite3
+import struct
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +65,11 @@ SCHEMA = [
         quote_id INTEGER NOT NULL REFERENCES quotes(id),
         tag_id INTEGER NOT NULL REFERENCES tags(id),
         PRIMARY KEY (quote_id, tag_id))""",
+    # 語意搜尋向量（bge-small-zh，512 維）；digest 是嵌入文字的指紋，文字或模型變了就重算
+    """CREATE TABLE IF NOT EXISTS quote_vecs (
+        quote_id INTEGER PRIMARY KEY REFERENCES quotes(id),
+        digest TEXT NOT NULL,
+        embedding F32_BLOB(512) NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS audit_issues (
         id INTEGER PRIMARY KEY,
         episode_id INTEGER NOT NULL REFERENCES episodes(id),
@@ -134,6 +141,9 @@ _EPISODE_ID = "(SELECT id FROM episodes WHERE stem = ?)"
 class SqliteDb:
     def __init__(self, path: str = ":memory:"):
         self.conn = sqlite3.connect(path)
+        # 本機測試用：模擬 libSQL 的向量函式
+        self.conn.create_function("vector32", 1, _vector32, deterministic=True)
+        self.conn.create_function("vector_distance_cos", 2, _cosine_distance, deterministic=True)
 
     def execute(self, sql: str, args=()) -> list[tuple]:
         return self.conn.execute(sql, tuple(args)).fetchall()
@@ -142,6 +152,18 @@ class SqliteDb:
         with self.conn:
             for sql, args in stmts:
                 self.conn.execute(sql, args)
+
+
+def _vector32(text: str) -> bytes:
+    values = json.loads(text)
+    return struct.pack(f"<{len(values)}f", *values)
+
+
+def _cosine_distance(a: bytes, b: bytes) -> float:
+    x, y = (struct.unpack(f"<{len(v) // 4}f", v) for v in (a, b))
+    dot = sum(p * q for p, q in zip(x, y))
+    norm = math.sqrt(sum(p * p for p in x)) * math.sqrt(sum(q * q for q in y))
+    return 1.0 - dot / norm if norm else 1.0
 
 
 def _encode(v) -> dict:
@@ -256,9 +278,10 @@ def write_episode(db, meta: EpisodeMeta, *, drive_id: str, srt_md5: str, version
                 indexed_at = excluded.indexed_at, rejected = excluded.rejected""",
          (stem, meta.season, meta.episode, meta.title, drive_id, srt_md5, version, now,
           result.rejected)),
-        (f"DELETE FROM quote_tags WHERE quote_id IN "
-         f"(SELECT id FROM quotes WHERE episode_id = {_EPISODE_ID})", (stem,)),
     ]
+    stmts += [(f"DELETE FROM {table} WHERE quote_id IN "
+               f"(SELECT id FROM quotes WHERE episode_id = {_EPISODE_ID})", (stem,))
+              for table in ("quote_tags", "quote_vecs")]
     stmts += [(f"DELETE FROM {table} WHERE episode_id = {_EPISODE_ID}", (stem,))
               for table in ("quotes", "cues", "audit_issues", "tag_suggestions")]
     stmts += [(f"INSERT INTO cues (episode_id, idx, start_s, end_s, text) VALUES ({_EPISODE_ID}, ?, ?, ?, ?)",
@@ -357,44 +380,28 @@ def record_fix(db, stem: str, *, md5_before: str, md5_after: str, version: str,
     db.transaction(stmts)
 
 
-def _like(term: str) -> str:
-    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
-
-
 SEARCH_COLUMNS = ("id", "season", "episode", "title", "start", "end", "text", "speaker",
-                  "quotability", "use_when", "tags", "score")
+                  "quotability", "use_when", "distance")
 
 
-def search(db, *, tags: list[tuple[str, str]], keywords: list[str], limit: int = 30) -> list[dict]:
-    """依標籤命中數（每個 2 分）與關鍵字命中數（台詞 3 分、使用情境 2 分）排序。
+def quote_docs(db) -> list[tuple[int, str, str, str | None]]:
+    """每段金句的 (id, 台詞, 使用情境, 已存向量的 digest 或 None)。"""
+    return [tuple(r) for r in db.execute(
+        "SELECT q.id, q.text, q.use_when, v.digest FROM quotes q LEFT JOIN quote_vecs v ON v.quote_id = q.id")]
 
-    同分時好引用程度高的優先。完全沒命中的不回傳。
-    """
-    tag_keys = [f"{facet}:{name}" for facet, name in tags]
-    keywords = [k.strip() for k in keywords if k.strip()]
-    parts, args = ["0"], []
-    if tag_keys:
-        marks = ", ".join("?" * len(tag_keys))
-        parts.append(f"""2 * (SELECT count(*) FROM quote_tags qt JOIN tags t ON t.id = qt.tag_id
-                              WHERE qt.quote_id = q.id AND t.facet || ':' || t.name IN ({marks}))""")
-        args += tag_keys
-    for k in keywords:
-        parts.append("(CASE WHEN q.text LIKE ? ESCAPE '\\' THEN 3 ELSE 0 END)"
-                     " + (CASE WHEN q.use_when LIKE ? ESCAPE '\\' THEN 2 ELSE 0 END)")
-        args += [_like(k), _like(k)]
-    sql = f"""
-        SELECT * FROM (
-            SELECT q.id, e.season, e.episode, e.title, q.start_s, q.end_s, q.text, q.speaker,
-                   q.quotability, q.use_when,
-                   (SELECT group_concat(t.name, '、') FROM quote_tags qt
-                    JOIN tags t ON t.id = qt.tag_id WHERE qt.quote_id = q.id) AS tags,
-                   {' + '.join(parts)} AS score
-            FROM quotes q JOIN episodes e ON e.id = q.episode_id)
-        WHERE score > 0
-        ORDER BY score DESC, quotability DESC, id
-        LIMIT ?"""
-    rows = db.execute(sql, [*args, limit])
+
+def save_vectors(db, rows: list[tuple[int, str, list[float]]]) -> None:
+    db.transaction([("INSERT OR REPLACE INTO quote_vecs (quote_id, digest, embedding) VALUES (?, ?, vector32(?))",
+                     (qid, digest, json.dumps([round(x, 6) for x in vec]))) for qid, digest, vec in rows])
+
+
+def nearest(db, vector: list[float], limit: int = 10) -> list[dict]:
+    """依餘弦距離由近到遠回傳金句（全表掃描；六千多筆在 Turso 上約百毫秒）。"""
+    rows = db.execute(
+        """SELECT q.id, e.season, e.episode, e.title, q.start_s, q.end_s, q.text, q.speaker,
+                  q.quotability, q.use_when, vector_distance_cos(v.embedding, vector32(?)) AS d
+           FROM quote_vecs v JOIN quotes q ON q.id = v.quote_id JOIN episodes e ON e.id = q.episode_id
+           ORDER BY d LIMIT ?""", (json.dumps(vector), limit))
     return [dict(zip(SEARCH_COLUMNS, row)) for row in rows]
 
 

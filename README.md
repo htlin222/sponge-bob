@@ -99,7 +99,9 @@ OAuth 同意畫面停在 **測試中** 時，Google 發的 refresh token **7 天
 uv run bob reseg            # 從 _psr/ 的原始轉錄用 Haiku 重新加標點與換人記號、重新斷句（--only、--redo）
 uv run bob fix              # 照語音修正誤聽，改寫 Drive 上的字幕（原檔備份為 _psr/<集名>.asr.srt）
 uv run bob index            # 標記已修正、尚未標記或內容已變的字幕（--limit、--workers）
-uv run bob ask "週一不想上班"  # 描述處境 → 推薦台詞、集數與時間碼（-v 顯示搜尋條件）
+uv run bob ask "週一不想上班"  # 語意搜尋 → 台詞、集數與時間碼，約 1 秒（-n 筆數；--pick 再讓 Haiku 挑並說明）
+uv run bob ctx ep161 6:36   # 某集某時間前後的字幕，看這段在演什麼
+uv run bob embed            # 補齊／更新語意向量（bob index 結束時自動做）
 uv run bob audit            # 字幕錯字/人名/幻覺統計、Haiku 提的新標籤
 uv run bob refs refs.json   # 載入台灣配音版台詞參考庫（[{phrase, kind, source}]，只存 Turso）
 uv run bob scan             # 拼音比對找誤聽，只把嫌疑交給 Haiku 確認（--dry-run、--only、--limit）
@@ -112,7 +114,7 @@ uv run bob still ep161 --text "開玉米罐" --speaker 珊迪  # 台詞截圖＋
 - **Haiku 只回字幕編號，不回台詞**。金句文字依編號從 SRT 切出，資料庫裡的每個字都是字幕上真有的。
 - 標籤是封閉的 `taxonomy.yml`（情境、情緒、語氣用途、角色），JSON schema 以 enum 強制；Haiku 覺得不夠時寫進 `tag_suggestions`，人工決定要不要加。
 - 好引用程度 1–5，2 分以下不存。改 prompt（`quotes.PROMPT_VERSION`）或分類表會改變 index 版本，下次 `bob index` 整批重標；字幕重做（md5 改變）的集數也會自動重標；若只是修正改了字、編號與時間不變，`bob index` 只就地更新台詞文字，不重標。
-- 搜尋：先讓模型把處境轉成標籤＋關鍵字，SQL 以「標籤命中 2 分、台詞命中 3 分、情境命中 2 分」取前 30 筆，再讓模型挑 1–5 段。
+- **搜尋**：每段金句的「使用情境」用本機的 `bge-small-zh`（fastembed／ONNX，免費離線）嵌入成 512 維向量，存在 Turso 的 `quote_vecs`，查詢時用 libSQL 的 `vector_distance_cos` 取最近的幾段。只嵌入情境不嵌入台詞：台詞的字面（玉米、罐頭）會把向量拉離處境，實測較差。查詢寫成情境的口吻（「朋友怕得不敢嘗試」）效果最好。原本「模型轉標籤 → SQL → 模型挑選」要 12 秒，其中兩次 `claude -p` 各 6 秒，大多是 CLI 啟動開銷；現在預設不叫模型，約 1 秒。
 - **台詞截圖 `bob still`**：以台詞中點為中心每 0.5 秒抓一格、共 6 張（都在台詞前後 3 秒內），經 Drive API 串流取單格、不下載整部影片；每張下方加字幕與「說話者｜《海綿寶寶》Sxx epNNN〈單元〉m:ss」，另附編號總覽圖讓人挑。輸出在 `scratch/stills/`（不進 git）。Claude Code 的用法見 `.claude/skills/spongebob-still/`。
 - 連線設定：`~/.config/sponge-bob/turso.json`（`{"url","token"}`）或 `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`；`--db 檔案.sqlite` 改用本機 SQLite。
 

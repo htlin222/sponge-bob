@@ -43,34 +43,6 @@ def test_init_is_idempotent():
     assert db.execute("SELECT count(*) FROM tags") == [(8,)]
 
 
-def test_search_scores_tags_two_text_three_use_when_two():
-    db = _db(
-        _quote(1, 1, "我準備好了", "上班前打氣", ("situations", "上班"), ("functions", "鼓勵")),
-        _quote(2, 2, "又是星期一", "週一不想上班", ("situations", "上班")),
-    )
-    hits = quotedb.search(db, tags=[("situations", "上班"), ("functions", "鼓勵")],
-                          keywords=["準備"])
-    # 第 1 段：兩個標籤 4 分 + 台詞命中 3 分 = 7；第 2 段：一個標籤 2 分。
-    assert [(h["text"], h["score"]) for h in hits] == [("我準備好了", 7), ("又是星期一", 2)]
-    assert hits[0]["tags"] in ("上班、鼓勵", "鼓勵、上班")
-
-
-def test_search_omits_quotes_without_any_hit():
-    db = _db(_quote(1, 1, "我準備好了", "上班前"))
-    assert quotedb.search(db, tags=[("emotions", "崩潰")], keywords=["考試"]) == []
-
-
-def test_like_wildcards_in_keywords_are_literal():
-    db = _db(_quote(1, 1, "我準備好了", "x"), _quote(3, 3, "100%完美", "y"))
-    assert [h["text"] for h in quotedb.search(db, tags=[], keywords=["%"])] == ["100%完美"]
-
-
-def test_ties_prefer_higher_quotability():
-    db = _db(_quote(1, 1, "我準備好了", "上班", score=3),
-             _quote(2, 2, "又是星期一", "上班", score=5))
-    assert [h["text"] for h in quotedb.search(db, tags=[], keywords=["上班"])] == ["又是星期一", "我準備好了"]
-
-
 def test_turso_values_round_trip():
     for v in (None, 3, 2.5, "海綿寶寶"):
         assert quotedb._decode(quotedb._encode(v)) == v
@@ -125,3 +97,23 @@ def test_episode_fixes_grouped_by_stem():
     got = quotedb.episode_fixes(db)
     assert sorted(got["ep79"]) == [("老師說小熊", "老實說熊熊"), ("老蜥蜴小熊", "老實說熊熊")]
     assert got["ep80"] == [("阿密巴", "阿米巴")]
+
+
+def test_vectors_are_listed_saved_and_dropped_with_their_episode():
+    db = _db(_quote(1, 1, "我準備好了", "上班前"))
+    [(qid, text, use_when, digest)] = quotedb.quote_docs(db)
+    assert (text, use_when, digest) == ("我準備好了", "上班前", None)
+    quotedb.save_vectors(db, [(qid, "d1", [1.0, 0.0])])
+    assert quotedb.quote_docs(db)[0][3] == "d1"
+    quotedb.write_episode(db, META, drive_id="d1", srt_md5="m2", version="v2", cues=CUES,
+                          result=Indexed((_quote(2, 2, "又是星期一", "週一"),), (), (), 0))
+    assert db.execute("SELECT count(*) FROM quote_vecs") == [(0,)]
+
+
+def test_nearest_ranks_by_cosine_similarity():
+    db = _db(_quote(1, 1, "我準備好了", "上班前"), _quote(2, 2, "又是星期一", "週一"))
+    ids = {text: qid for qid, text, _, _ in quotedb.quote_docs(db)}
+    quotedb.save_vectors(db, [(ids["我準備好了"], "a", [1.0, 0.0]), (ids["又是星期一"], "b", [0.0, 1.0])])
+    hits = quotedb.nearest(db, [0.2, 0.9], limit=2)
+    assert [h["text"] for h in hits] == ["又是星期一", "我準備好了"]
+    assert hits[0]["title"] == META.title and hits[0]["use_when"] == "週一"
