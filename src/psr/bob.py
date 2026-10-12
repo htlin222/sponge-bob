@@ -399,13 +399,20 @@ def _confirm(batch, model, around=None):
     return {v["id"]: v for v in raw.get("verdicts", []) if isinstance(v.get("id"), int)}
 
 
+def _puncts(text: str) -> list[str]:
+    return sorted(ch for ch in text if not ch.isalnum() and not ch.isspace())
+
+
 def _accept(s: refaudit.Suspect, v: dict | None) -> tuple[bool, str, str]:
     """模型說是誤聽，還要過跟 `bob fix` 同一道拼音門檻，才算數。"""
     if not v or not v.get("ok"):
         return False, "", ""
     wrong, right = (v.get("wrong") or "").strip(), (v.get("right") or "").strip()
+    # 同音異寫是逐字換同音字，字數必須相同；參考庫的名稱可能被聽漏字，才放寬到 ±2。
+    max_change = 0 if s.reason == "homophone" else fix.MAX_LENGTH_CHANGE
     ok = (wrong and right and wrong != right and wrong in s.context
-          and abs(len(wrong) - len(right)) <= fix.MAX_LENGTH_CHANGE
+          and abs(len(wrong) - len(right)) <= max_change
+          and _puncts(wrong) == _puncts(right)  # 只修字，不准順手加減標點
           and fix.sound_similarity(wrong, right) >= fix.SOUND_THRESHOLD)
     return bool(ok), wrong, right
 
