@@ -1,4 +1,4 @@
-from psr.refaudit import fuzzy, homophone_suspects, ref_suspects, syllables
+from psr.refaudit import fuzzy, homophone_suspects, ref_suspects, syllables, widen
 
 
 def test_fuzzy_merges_retroflex_and_nasal_finals():
@@ -44,3 +44,34 @@ def test_homophone_flags_rare_spelling_of_common_name():
 def test_homophone_ignores_interchangeable_pronouns():
     cues = [(("e", i), "他們走了") for i in range(12)] + [(("e", 99), "她們走了")]
     assert all("她們" not in s.heard for s in homophone_suspects(cues))
+
+
+def test_widen_extends_single_char_fix_to_neighbours():
+    assert widen("我要去謝寶王上班", "謝寶王", "寶", "堡") == ("謝寶王", "謝堡王")
+
+
+def test_widen_anchors_on_the_suspect_not_the_first_occurrence():
+    # 「寶」在句中出現三次，要改的是嫌疑片段「謝寶王」裡那個
+    assert widen("海綿寶寶去謝寶王", "謝寶王", "寶", "堡") == ("謝寶王", "謝堡王")
+
+
+def test_widen_keeps_long_fixes_unchanged():
+    assert widen("快告訴老師說小熊快", "老師說小熊", "老師說小熊", "老實說熊熊") == ("老師說小熊", "老實說熊熊")
+
+
+def test_widen_gives_up_when_punctuation_blocks():
+    assert widen("寶！", "寶", "寶", "堡") is None
+
+
+def test_ref_match_rejects_different_character_names_sharing_a_suffix():
+    # 蟹老闆 / 皮老闆 只共用「老闆」，xie 與 pi 不像
+    assert ref_suspects([(("e", 1), "蟹老闆你好")], ["皮老闆你好"]) == []
+
+
+def test_ref_match_rejects_spelling_variants_of_the_same_word():
+    assert ref_suspects([(("e", 1), "美味蟹堡祖傳秘方")], ["美味蟹堡祖傳祕方"]) == []
+
+
+def test_ref_match_skips_phrases_that_are_common_in_the_corpus():
+    cues = [(("e", i), "海綿寶寶你好") for i in range(9)]
+    assert ref_suspects(cues, ["海綿寶貝你好"]) == []

@@ -450,19 +450,25 @@ def cmd_scan(args) -> int:
             print(f"[{n}/{len(batches)}] 確認 {sum(r[3] for r in rows)}/{len(rows)}  "
                   + "、".join(f"{r[4]}→{r[5]}" for r in rows if r[3])[:120], flush=True)
 
-    # 確認過的修正存成單集對照表，並直接改寫 Drive 上的字幕
+    # 確認過的修正延伸成至少三個字的片段（整集替換才不會誤傷），存成單集對照表
     by_stem: dict[str, dict[str, str]] = {}
-    for (stem, _, _), (ok, wrong, right) in cache.items():
-        if ok and args.only in stem:
-            by_stem.setdefault(stem, {})[wrong] = right
+    for s in suspects:
+        ok, wrong, right = cache.get((s.key[0], s.heard, s.proposed), (False, "", ""))
+        pair = refaudit.widen(s.context, s.heard, wrong, right) if ok else None
+        if pair:
+            by_stem.setdefault(s.key[0], {})[pair[0]] = pair[1]
     known = quotedb.episode_fixes(db)
     new_rows = [(stem, w, r, "scan") for stem, pairs in by_stem.items() for w, r in pairs.items()
                 if (w, r) not in known.get(stem, [])]
-    if new_rows:
-        quotedb.add_episode_fixes(db, new_rows)
     stems = sorted({stem for stem, *_ in new_rows})
     print(f"新增單集修正 {len(new_rows)} 筆、影響 {len(stems)} 集")
-    if args.dry_run or not stems:
+    if args.dry_run:
+        for row in new_rows[:40]:
+            print(f"  {row[0][-24:]}  {row[1]}→{row[2]}")
+        return 0
+    if new_rows:
+        quotedb.add_episode_fixes(db, new_rows)
+    if not stems:
         return 0
     service, files, _ = _drive_srts(args.folder)
     by_name = {f["name"].removesuffix(SRT_SUFFIX): f for f in files}

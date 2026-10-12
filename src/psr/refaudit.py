@@ -27,8 +27,10 @@ _CJK = re.compile(r"[㐀-鿿]+")
 _INITIALS = (("zh", "z"), ("ch", "c"), ("sh", "s"))
 _FINALS = (("ing", "in"), ("eng", "en"))
 
-MIN_REF_SYLLABLES = 3
+MIN_REF_SYLLABLES = 4
 MIN_REF_SCORE = 0.85
+# 片段在全部字幕裡出現超過這個次數，就是正常說法（「海綿寶寶」不是「海綿寶貝」的誤聽）。
+MAX_HEARD_COUNT = 8
 # 只差在這些字的同音異寫不算誤聽（他／她／它、的／得…），全庫比對時略過。
 INTERCHANGEABLE = [
     set("他她它牠祂"),
@@ -72,6 +74,32 @@ def syllables(text: str) -> list[tuple[str, str, int]]:
     return out
 
 
+_INITIAL = re.compile(r"^(?:[bpmfdtnlgkhjqxrzcsyw])?")
+
+
+def _split(syllable: str) -> tuple[str, str]:
+    m = _INITIAL.match(syllable)
+    return syllable[: m.end()], syllable[m.end():]
+
+
+def _close(a: str, b: str) -> bool:
+    """兩個（已模糊化的）音節唸起來像：完全相同，或聲母相同，或韻母相同。"""
+    if a == b:
+        return True
+    (ia, fa), (ib, fb) = _split(a), _split(b)
+    return ia == ib or fa == fb
+
+
+def sounds_alike(ref, win) -> bool:
+    """逐音節比：每個不同的音節都要像，而且不同的音節不超過一半。
+
+    整串拼音算相似度會被共同的部分拉高（「蟹老闆」與「皮老闆」共用 lao ban），
+    逐音節才擋得掉 xie/pi 這種完全不像的換字。
+    """
+    diff = [(a, b) for (a, _, _), (b, _, _) in zip(ref, win) if a != b]
+    return 0 < len(diff) * 2 <= len(ref) and all(_close(a, b) for a, b in diff)
+
+
 def _sound(sylls) -> str:
     return " ".join(s for s, _, _ in sylls)
 
@@ -102,6 +130,14 @@ def ref_suspects(
         for pos, (s, _, _) in enumerate(seq):
             index[s].append((ci, pos))
 
+    corpus = "\n".join("".join(c for _, c, _ in seq) for seq in seqs)
+    seen_count: dict[str, int] = {}
+
+    def common(chars: str) -> bool:
+        if chars not in seen_count:
+            seen_count[chars] = corpus.count(chars)
+        return seen_count[chars] > MAX_HEARD_COUNT
+
     out = []
     for ref in dict.fromkeys(refs):
         rs = syllables(ref)
@@ -128,7 +164,10 @@ def ref_suspects(
             if start < 0 or start + n > len(seq):
                 continue
             win = seq[start : start + n]
-            if "".join(c for _, c, _ in win) == ref_chars:
+            chars = "".join(c for _, c, _ in win)
+            if chars == ref_chars or _interchangeable(chars, ref_chars) or not sounds_alike(rs, win):
+                continue
+            if common(chars):
                 continue
             score = SequenceMatcher(None, ref_sound, _sound(win)).ratio()
             if score < min_score:
@@ -260,3 +299,35 @@ def confirm_prompt(batch: list[tuple[int, Suspect]]) -> str:
         f"{i}|context={s.context.replace(chr(10), ' ')}|heard={s.heard}|proposed={s.proposed}"
         for i, s in batch
     )
+
+
+MIN_FIX_CHARS = 3
+
+
+def widen(context: str, heard: str, wrong: str, right: str,
+          min_chars: int = MIN_FIX_CHARS) -> tuple[str, str] | None:
+    """把模型給的錯字往兩側的漢字延伸到至少 min_chars 字。
+
+    修正是整集替換，單一個字（「寶→堡」）會把整集的「海綿寶寶」改壞；延伸成
+    「謝寶王→謝堡王」就只會命中原本那處。以嫌疑片段的位置為錨點，碰到標點就停；
+    延伸不到 min_chars 字就放棄這筆。
+    """
+    at = context.find(heard)
+    i = context.find(wrong, at) if at >= 0 and wrong in heard else -1
+    if i < 0:
+        i = context.find(wrong)
+    if i < 0:
+        return None
+    a, b = i, i + len(wrong)
+    left = True  # 左右輪流延伸，錯字盡量留在片段中間
+    while b - a < min_chars:
+        can_left = a > 0 and _CJK.match(context[a - 1])
+        can_right = b < len(context) and _CJK.match(context[b])
+        if not (can_left or can_right):
+            return None
+        if can_left and (left or not can_right):
+            a -= 1
+        else:
+            b += 1
+        left = not left
+    return context[a:b], context[a:i] + right + context[i + len(wrong):b]
