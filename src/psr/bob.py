@@ -5,6 +5,8 @@
     bob index [--limit N] [--workers 4]   用 Haiku 標記已修正的字幕
     bob ask "明天要上台報告好緊張"          找出最適合引用的台詞
     bob audit                             彙整 Haiku 審計出的字幕問題與標籤提案
+    bob refs refs.json                    載入台灣配音版台詞參考庫（只存 Turso）
+    bob scan [--dry-run]                  拼音比對找誤聽，只把嫌疑交給模型確認
 
 全部在本機執行：模型走 `claude -p`（訂閱額度），資料寫進 Turso。
 """
@@ -22,7 +24,7 @@ from pathlib import Path
 
 from googleapiclient.discovery import build
 
-from psr import claude_cli, cleanup, drive, fix, glossary, quotedb, quotes
+from psr import claude_cli, cleanup, drive, fix, glossary, quotedb, quotes, refaudit
 from psr import punctuate as punct_mod
 from psr.batch import WORK_SUBFOLDER, validate_folder_id
 from psr.cli import TOKEN_PATH, _build_cues
@@ -61,8 +63,11 @@ def _write(service, name: str, folder_id: str, text: str) -> str:
     return _md5(text)
 
 
-def _fix_episode(text: str, gloss: glossary.Glossary, model: str):
+def _fix_episode(text: str, gloss: glossary.Glossary, model: str, local: list[tuple[str, str]] = ()):
     cues, known = fix.apply_glossary(fix.traditionalize(parse(text)), gloss.corrections())
+    if local:  # `bob scan` 確認過的單集修正
+        cues, scanned = fix.apply_glossary(cues, list(local))
+        known += scanned
     raw = claude_cli.ask(fix.user_prompt(cues), system=fix.system_prompt([e.correct for e in gloss.entries]),
                          schema=fix.SCHEMA, model=model)
     cues, applied, skipped = fix.apply_fixes(cues, raw.get("fixes", []))
@@ -81,6 +86,7 @@ def cmd_fix(args) -> int:
         print(f"找不到 {WORK_SUBFOLDER}/ 子資料夾，無處備份原始字幕。", file=sys.stderr)
         return 1
     backups = {f["name"]: f["id"] for f in drive.list_children(service, work_id)}
+    local = quotedb.episode_fixes(db)
 
     pending = [f for f in files
                if state.get(f["name"].removesuffix(SRT_SUFFIX)) != (f.get("md5Checksum"), version)]
@@ -105,7 +111,8 @@ def cmd_fix(args) -> int:
 
     failures = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(_fix_episode, source, gloss, args.model): (f, stem, current, source, fresh)
+        futures = {pool.submit(_fix_episode, source, gloss, args.model, local.get(stem, ())):
+                   (f, stem, current, source, fresh)
                    for f, stem, current, source, fresh in jobs}
         for n, fut in enumerate(as_completed(futures), 1):
             f, stem, current, source, fresh = futures[fut]
@@ -373,6 +380,110 @@ def cmd_audit(args) -> int:
     return 0
 
 
+def cmd_refs(args) -> int:
+    refs = json.loads(Path(args.file).read_text())
+    refs = [r for r in refs if (r.get("phrase") or "").strip()]
+    db = quotedb.connect(args.db)
+    quotedb.init(db, quotes.load_taxonomy(TAXONOMY_PATH))
+    quotedb.load_refs(db, refs)
+    print(f"參考庫載入 {len(refs)} 句，目前共 {len(quotedb.ref_phrases(db))} 句")
+    return 0
+
+
+SCAN_BATCH = 40
+
+
+def _confirm(batch, model):
+    raw = claude_cli.ask(refaudit.confirm_prompt(batch), system=refaudit.CONFIRM_SYSTEM,
+                         schema=refaudit.CONFIRM_SCHEMA, model=model)
+    return {v["id"]: v for v in raw.get("verdicts", []) if isinstance(v.get("id"), int)}
+
+
+def _accept(s: refaudit.Suspect, v: dict | None) -> tuple[bool, str, str]:
+    """模型說是誤聽，還要過跟 `bob fix` 同一道拼音門檻，才算數。"""
+    if not v or not v.get("ok"):
+        return False, "", ""
+    wrong, right = (v.get("wrong") or "").strip(), (v.get("right") or "").strip()
+    ok = (wrong and right and wrong != right and wrong in s.context
+          and abs(len(wrong) - len(right)) <= fix.MAX_LENGTH_CHANGE
+          and fix.sound_similarity(wrong, right) >= fix.SOUND_THRESHOLD)
+    return bool(ok), wrong, right
+
+
+def cmd_scan(args) -> int:
+    db = quotedb.connect(args.db)
+    quotedb.init(db, quotes.load_taxonomy(TAXONOMY_PATH))
+    rows = db.execute("SELECT e.stem, c.idx, c.text FROM cues c JOIN episodes e ON e.id = c.episode_id")
+    cues = [((stem, idx), text) for stem, idx, text in rows if args.only in stem]
+    refs = quotedb.ref_phrases(db)
+    found = refaudit.ref_suspects(cues, refs) + refaudit.homophone_suspects(cues)
+    seen, suspects = set(), []
+    for s in found:
+        k = (s.key[0], s.heard, s.proposed)
+        if k not in seen:
+            seen.add(k)
+            suspects.append(s)
+    cache = quotedb.scan_verdicts(db)
+    todo = [s for s in suspects if (s.key[0], s.heard, s.proposed) not in cache]
+    print(f"字幕 {len(cues)} 條、參考句 {len(refs)}：嫌疑 {len(suspects)}"
+          f"（參考庫 {sum(s.reason == 'ref' for s in suspects)}、同音異寫 {sum(s.reason == 'homophone' for s in suspects)}），"
+          f"待模型確認 {len(todo)}", flush=True)
+    if args.limit:
+        todo = todo[:args.limit]
+
+    batches = [list(enumerate(todo[i:i + SCAN_BATCH])) for i in range(0, len(todo), SCAN_BATCH)]
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {pool.submit(_confirm, b, args.model): b for b in batches}
+        for n, fut in enumerate(as_completed(futures), 1):
+            batch = futures[fut]
+            try:
+                verdicts = fut.result()
+            except claude_cli.ClaudeError as e:
+                print(f"[{n}/{len(batches)}] 失敗：{e}", file=sys.stderr, flush=True)
+                continue
+            rows = []
+            for i, s in batch:
+                ok, wrong, right = _accept(s, verdicts.get(i))
+                rows.append((s.key[0], s.heard, s.proposed, ok, wrong, right, s.reason))
+                cache[(s.key[0], s.heard, s.proposed)] = (ok, wrong, right)
+            quotedb.record_scan(db, rows)
+            print(f"[{n}/{len(batches)}] 確認 {sum(r[3] for r in rows)}/{len(rows)}  "
+                  + "、".join(f"{r[4]}→{r[5]}" for r in rows if r[3])[:120], flush=True)
+
+    # 確認過的修正存成單集對照表，並直接改寫 Drive 上的字幕
+    by_stem: dict[str, dict[str, str]] = {}
+    for (stem, _, _), (ok, wrong, right) in cache.items():
+        if ok and args.only in stem:
+            by_stem.setdefault(stem, {})[wrong] = right
+    known = quotedb.episode_fixes(db)
+    new_rows = [(stem, w, r, "scan") for stem, pairs in by_stem.items() for w, r in pairs.items()
+                if (w, r) not in known.get(stem, [])]
+    if new_rows:
+        quotedb.add_episode_fixes(db, new_rows)
+    stems = sorted({stem for stem, *_ in new_rows})
+    print(f"新增單集修正 {len(new_rows)} 筆、影響 {len(stems)} 集")
+    if args.dry_run or not stems:
+        return 0
+    service, files, _ = _drive_srts(args.folder)
+    by_name = {f["name"].removesuffix(SRT_SUFFIX): f for f in files}
+    state = quotedb.fix_state(db)
+    for stem in stems:
+        f = by_name.get(stem)
+        if not f:
+            continue
+        current = drive.read_text(service, f["id"])
+        cues, applied = fix.apply_glossary(parse(current), list(by_stem[stem].items()))
+        new_text = render(cues)
+        if new_text == current:
+            continue
+        md5_after = _write(service, f["name"], args.folder, new_text)
+        if state.get(stem, (None,))[0] == f.get("md5Checksum"):
+            quotedb.set_fixed_md5(db, stem, md5_after)
+        print(f"{stem}：改 {len(applied)} 處  " + "、".join(f"{x.wrong}→{x.right}" for x in applied[:5]))
+    print("接著跑 `bob index` 會就地更新台詞庫的文字。")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="bob", description="海綿寶寶金句庫")
     parser.add_argument("--db", help="改用本機 SQLite 檔（預設連 Turso）")
@@ -392,12 +503,22 @@ def main(argv=None) -> int:
     ask.add_argument("situation")
     ask.add_argument("--model", default="haiku")
     ask.add_argument("-v", "--verbose", action="store_true")
+    refs = sub.add_parser("refs", help="載入台灣配音版台詞參考庫（JSON：[{phrase, kind, source}]）")
+    refs.add_argument("file")
+    scan = sub.add_parser("scan", help="用拼音比對參考庫與全庫同音異寫找誤聽，只把嫌疑交給模型確認")
+    scan.add_argument("--folder", default=os.environ.get("DRIVE_FOLDER_ID", ""))
+    scan.add_argument("--limit", type=int, default=0, help="本輪最多確認幾個嫌疑，0 = 全部")
+    scan.add_argument("--workers", type=int, default=4)
+    scan.add_argument("--model", default="haiku")
+    scan.add_argument("--only", default="", help="只處理檔名含此字串的集數")
+    scan.add_argument("--dry-run", action="store_true", help="只確認、不改寫 Drive")
     audit = sub.add_parser("audit", help="彙整字幕審計結果與標籤提案")
     audit.add_argument("--top", type=int, default=30)
     args = parser.parse_args(argv)
-    if args.cmd in ("reseg", "fix", "index"):
+    if args.cmd in ("reseg", "fix", "index") or (args.cmd == "scan" and not args.dry_run):
         args.folder = validate_folder_id(args.folder)
-    return {"reseg": cmd_reseg, "fix": cmd_fix, "index": cmd_index, "ask": cmd_ask, "audit": cmd_audit}[args.cmd](args)
+    return {"reseg": cmd_reseg, "fix": cmd_fix, "index": cmd_index, "ask": cmd_ask, "audit": cmd_audit,
+            "refs": cmd_refs, "scan": cmd_scan}[args.cmd](args)
 
 
 if __name__ == "__main__":

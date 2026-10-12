@@ -97,6 +97,25 @@ SCHEMA = [
         failed_chunks INTEGER NOT NULL,
         violations INTEGER NOT NULL,
         done_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS refs (
+        phrase TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        source TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS scan_verdicts (
+        stem TEXT NOT NULL,
+        heard TEXT NOT NULL,
+        proposed TEXT NOT NULL,
+        ok INTEGER NOT NULL,
+        wrong TEXT NOT NULL,
+        fixed TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        PRIMARY KEY (stem, heard, proposed))""",
+    """CREATE TABLE IF NOT EXISTS episode_fixes (
+        stem TEXT NOT NULL,
+        wrong TEXT NOT NULL,
+        fixed TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        PRIMARY KEY (stem, wrong))""",
     """CREATE TABLE IF NOT EXISTS fix_log (
         stem TEXT NOT NULL,
         cue_idx INTEGER NOT NULL,
@@ -377,3 +396,48 @@ def search(db, *, tags: list[tuple[str, str]], keywords: list[str], limit: int =
         LIMIT ?"""
     rows = db.execute(sql, [*args, limit])
     return [dict(zip(SEARCH_COLUMNS, row)) for row in rows]
+
+
+def load_refs(db, refs: list[dict]) -> None:
+    """參考庫：台灣配音版的台詞、譯名與迷因（有版權，只存 Turso）。"""
+    db.transaction([("""INSERT INTO refs (phrase, kind, source) VALUES (?, ?, ?)
+        ON CONFLICT (phrase) DO UPDATE SET kind = excluded.kind, source = excluded.source""",
+                     (r["phrase"], r.get("kind") or "quote", r.get("source") or "")) for r in refs])
+
+
+def ref_phrases(db) -> list[str]:
+    return [p for (p,) in db.execute("SELECT phrase FROM refs ORDER BY phrase")]
+
+
+def scan_verdicts(db) -> dict[tuple[str, str, str], tuple[bool, str, str]]:
+    """(集名, 可疑片段, 候選) → (是否誤聽, wrong, fixed)。問過模型的嫌疑不再問第二次。"""
+    return {(stem, heard, proposed): (bool(ok), wrong, fixed) for stem, heard, proposed, ok, wrong, fixed
+            in db.execute("SELECT stem, heard, proposed, ok, wrong, fixed FROM scan_verdicts")}
+
+
+def record_scan(db, verdicts: list[tuple[str, str, str, bool, str, str, str]]) -> None:
+    db.transaction([("""INSERT INTO scan_verdicts (stem, heard, proposed, ok, wrong, fixed, reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (stem, heard, proposed) DO UPDATE SET ok = excluded.ok, wrong = excluded.wrong,
+            fixed = excluded.fixed, reason = excluded.reason""",
+                     (stem, heard, proposed, int(ok), wrong, fixed, reason))
+                    for stem, heard, proposed, ok, wrong, fixed, reason in verdicts])
+
+
+def episode_fixes(db) -> dict[str, list[tuple[str, str]]]:
+    """單集對照表：stem → [(誤聽, 正字)]。`bob fix` 重修時也套用，修過的字不會被蓋回去。"""
+    out: dict[str, list[tuple[str, str]]] = {}
+    for stem, wrong, fixed in db.execute("SELECT stem, wrong, fixed FROM episode_fixes"):
+        out.setdefault(stem, []).append((wrong, fixed))
+    return out
+
+
+def add_episode_fixes(db, rows: list[tuple[str, str, str, str]]) -> None:
+    db.transaction([("""INSERT INTO episode_fixes (stem, wrong, fixed, reason) VALUES (?, ?, ?, ?)
+        ON CONFLICT (stem, wrong) DO UPDATE SET fixed = excluded.fixed, reason = excluded.reason""",
+                     row) for row in rows])
+
+
+def set_fixed_md5(db, stem: str, md5_after: str) -> None:
+    """字幕被 `bob scan` 就地改過：更新修正後 md5，`bob fix` 才認得它仍是我們的輸出。"""
+    db.transaction([("UPDATE srt_fixes SET md5_after = ? WHERE stem = ?", (md5_after, stem))])

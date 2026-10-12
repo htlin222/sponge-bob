@@ -97,3 +97,31 @@ def test_punctuation_cache_is_keyed_by_version():
     quotedb.cache_punctuation(db, META.stem, "1", "你好。／我很好！")
     assert quotedb.cached_punctuation(db, META.stem, "1") == "你好。／我很好！"
     assert quotedb.cached_punctuation(db, META.stem, "2") is None
+
+
+def test_refs_load_is_idempotent_and_listed():
+    db = _db()
+    quotedb.load_refs(db, [{"phrase": "老實說熊熊", "kind": "meme", "source": "u"}])
+    quotedb.load_refs(db, [{"phrase": "老實說熊熊", "kind": "name", "source": "v"},
+                           {"phrase": "野海熊防護圈"}])
+    assert quotedb.ref_phrases(db) == ["老實說熊熊", "野海熊防護圈"]
+
+
+def test_scan_verdicts_round_trip():
+    db = _db()
+    quotedb.record_scan(db, [("ep79", "老師說，小熊", "老實說熊熊", True, "老師說，小熊", "老實說熊熊", "ref"),
+                             ("ep1", "我的防", "我的房", False, "", "", "homophone")])
+    assert quotedb.scan_verdicts(db) == {
+        ("ep79", "老師說，小熊", "老實說熊熊"): (True, "老師說，小熊", "老實說熊熊"),
+        ("ep1", "我的防", "我的房"): (False, "", ""),
+    }
+
+
+def test_episode_fixes_grouped_by_stem():
+    db = _db()
+    quotedb.add_episode_fixes(db, [("ep79", "老蜥蜴小熊", "老實說熊熊", "scan"),
+                                   ("ep79", "老師說小熊", "老實說熊熊", "scan"),
+                                   ("ep80", "阿密巴", "阿米巴", "scan")])
+    got = quotedb.episode_fixes(db)
+    assert sorted(got["ep79"]) == [("老師說小熊", "老實說熊熊"), ("老蜥蜴小熊", "老實說熊熊")]
+    assert got["ep80"] == [("阿密巴", "阿米巴")]
