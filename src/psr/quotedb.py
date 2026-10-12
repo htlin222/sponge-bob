@@ -108,6 +108,9 @@ SCHEMA = [
         phrase TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
         source TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS transcripts (
+        name TEXT PRIMARY KEY,
+        text TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS scan_verdicts (
         stem TEXT NOT NULL,
         heard TEXT NOT NULL,
@@ -458,6 +461,21 @@ def load_refs(db, refs: list[dict]) -> None:
 
 def ref_phrases(db) -> list[str]:
     return [p for (p,) in db.execute("SELECT phrase FROM refs ORDER BY phrase")]
+
+
+def transcripts(db) -> dict[str, str]:
+    """Fandom 英文集名 → 英文原版台詞（`bob scan --fandom` 的劇情參考）。"""
+    return dict(db.execute("SELECT name, text FROM transcripts"))
+
+
+def save_transcript(db, name: str, text: str) -> None:
+    db.transaction([("INSERT OR REPLACE INTO transcripts (name, text) VALUES (?, ?)", (name, text))])
+
+
+def fandom_checked(db) -> set[tuple[str, str, str]]:
+    """已經附英文原版台詞重新確認過的嫌疑，不再重問。"""
+    return {tuple(r) for r in db.execute(
+        "SELECT stem, heard, proposed FROM scan_verdicts WHERE reason = 'fandom'")}
 
 
 def scan_verdicts(db) -> dict[tuple[str, str, str], tuple[bool, str, str]]:

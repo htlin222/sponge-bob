@@ -26,6 +26,7 @@ import hashlib
 import shutil
 import json
 import os
+import re
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -33,7 +34,7 @@ from pathlib import Path
 
 from googleapiclient.discovery import build
 
-from psr import backup, cleanup, drive, fix, glossary, llm, quotedb, quotes, refaudit, semantic, still
+from psr import backup, cleanup, drive, fandom, fix, glossary, llm, quotedb, quotes, refaudit, semantic, still
 from psr import punctuate as punct_mod
 from psr.batch import WORK_SUBFOLDER, validate_folder_id
 from psr.cli import TOKEN_PATH, _build_cues
@@ -508,6 +509,73 @@ def _accept(s: refaudit.Suspect, v: dict | None) -> tuple[bool, str, str]:
     return bool(ok), wrong, right
 
 
+FANDOM_SYSTEM = refaudit.CONFIRM_SYSTEM + """
+
+另外附上本集的英文原版台詞（Fandom wiki 的 transcript），用來弄清楚這句在劇情裡說的是什麼。
+中文配音是意譯，不會逐字對應英文：你仍然只修「聽錯的字」，修正前後唸起來必須相近，
+不要照英文翻譯改寫，也不要因為英文沒有對應的句子就判定沒錯。"""
+
+
+def _episode_transcript(db, stem: str, listing, stored: dict[str, str]) -> str:
+    m = re.search(r"_ep(\d+)", stem)
+    parts = []
+    for name in fandom.episode_names(int(m.group(1)), listing) if m else []:
+        if name not in stored:
+            text = fandom.fetch_transcript(name)
+            if not text:
+                continue
+            quotedb.save_transcript(db, name, text)
+            stored[name] = text
+        parts.append(f"## {name}\n{stored[name]}")
+    return "\n\n".join(parts)
+
+
+def _fandom_recheck(db, suspects, cache, around, args) -> None:
+    """只看中文判斷不了的審計嫌疑，按集附上英文原版台詞再問一次。"""
+    done = quotedb.fandom_checked(db)
+    todo = [s for s in suspects if s.reason == "audit"
+            and not cache.get((s.key[0], s.heard, s.proposed), (False,))[0]
+            and (s.key[0], s.heard, s.proposed) not in done]
+    by_stem: dict[str, list] = {}
+    for s in todo:
+        by_stem.setdefault(s.key[0], []).append(s)
+    listing, stored = fandom.fetch_listing(), quotedb.transcripts(db)
+    jobs = []
+    for stem, items in sorted(by_stem.items()):
+        transcript = _episode_transcript(db, stem, listing, stored)
+        if not transcript:
+            print(f"{stem}：Fandom 找不到英文台詞，略過", file=sys.stderr)
+            continue
+        jobs += [(transcript, list(enumerate(items[i:i + SCAN_BATCH])))
+                 for i in range(0, len(items), SCAN_BATCH)]
+    print(f"附英文原版台詞重新確認：{len(todo)} 個嫌疑、{len(by_stem)} 集、{len(jobs)} 批", flush=True)
+
+    def ask(transcript, batch):
+        prompt = f"英文原版台詞：\n{transcript}\n\n=== 待確認 ===\n\n" + refaudit.confirm_prompt(batch, around)
+        raw = llm.ask(prompt, system=FANDOM_SYSTEM, schema=refaudit.CONFIRM_SCHEMA, model=args.model)
+        return {v["id"]: v for v in raw.get("verdicts", []) if isinstance(v.get("id"), int)}
+
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {pool.submit(ask, t, b): b for t, b in jobs}
+        for n, fut in enumerate(as_completed(futures), 1):
+            batch = futures[fut]
+            try:
+                verdicts = fut.result()
+            except llm.ERRORS as e:
+                print(f"[fandom {n}/{len(jobs)}] 失敗：{e}", file=sys.stderr, flush=True)
+                continue
+            rows = []
+            for i, s in batch:
+                if i not in verdicts:
+                    continue
+                ok, wrong, right = _accept(s, verdicts[i])
+                rows.append((s.key[0], s.heard, s.proposed, ok, wrong, right, "fandom"))
+                cache[(s.key[0], s.heard, s.proposed)] = (ok, wrong, right)
+            quotedb.record_scan(db, rows)
+            print(f"[fandom {n}/{len(jobs)}] 確認 {sum(r[3] for r in rows)}/{len(rows)}  "
+                  + "、".join(f"{r[4]}→{r[5]}" for r in rows if r[3])[:120], flush=True)
+
+
 def cmd_scan(args) -> int:
     db = quotedb.connect(args.db)
     quotedb.init(db, quotes.load_taxonomy(TAXONOMY_PATH))
@@ -566,6 +634,9 @@ def cmd_scan(args) -> int:
             quotedb.record_scan(db, rows)
             print(f"[{n}/{len(batches)}] 確認 {sum(r[3] for r in rows)}/{len(rows)}  "
                   + "、".join(f"{r[4]}→{r[5]}" for r in rows if r[3])[:120], flush=True)
+
+    if args.fandom:
+        _fandom_recheck(db, suspects, cache, around, args)
 
     # 確認過的修正延伸成至少三個字的片段（整集替換才不會誤傷），存成單集對照表
     by_stem: dict[str, dict[str, str]] = {}
@@ -700,6 +771,8 @@ def main(argv=None) -> int:
     scan.add_argument("--only", default="", help="只處理檔名含此字串的集數")
     scan.add_argument("--dry-run", action="store_true", help="只確認、不改寫 Drive")
     scan.add_argument("--audit", action="store_true", help="也確認標記時回報的字幕問題（audit_issues）")
+    scan.add_argument("--fandom", action="store_true",
+                      help="只看中文判斷不了的審計嫌疑，附 Fandom 英文原版台詞再確認一次（需搭配 --audit）")
     st = sub.add_parser("still", help="抓台詞畫面，下方加字幕與出處，一次出多張候選")
     st.add_argument("episode", help="集名片段，例如 ep161 或 月球遊記")
     where = st.add_mutually_exclusive_group(required=True)
