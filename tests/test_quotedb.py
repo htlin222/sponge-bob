@@ -117,3 +117,17 @@ def test_nearest_ranks_by_cosine_similarity():
     hits = quotedb.nearest(db, [0.2, 0.9], limit=2)
     assert [h["text"] for h in hits] == ["又是星期一", "我準備好了"]
     assert hits[0]["title"] == META.title and hits[0]["use_when"] == "週一"
+
+
+def test_grep_cues_matches_any_term_in_episode_order():
+    db = _db()
+    rows = quotedb.grep_cues(db, ["星期一", "完美"])
+    assert [(r[0], r[1], r[2]) for r in rows] == [
+        ("海綿寶寶_S01_ep001_急徵店員", 1.0, "又是星期一"),
+        ("海綿寶寶_S01_ep001_急徵店員", 2.0, "100%完美"),
+    ]
+
+
+def test_grep_cues_treats_percent_literally():
+    db = _db()
+    assert [r[2] for r in quotedb.grep_cues(db, ["%"])] == ["100%完美"]

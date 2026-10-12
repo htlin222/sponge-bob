@@ -1,4 +1,6 @@
-from psr.still import caption_lines, frame_times, match_cues, segment_title, source_line
+from PIL import Image
+
+from psr.still import caption_lines, content_box, frame_times, match_cues, source_line
 
 
 def test_frames_are_evenly_spaced_around_the_cue_middle():
@@ -21,10 +23,26 @@ def test_frames_never_before_zero():
     assert min(frame_times(0.2, 0.6)) >= 0.0
 
 
-def test_segment_title_picks_the_half_the_cue_is_in():
-    assert segment_title("月球遊記／蟹老闆渡假去", 396.8, 1320.0) == "月球遊記"
-    assert segment_title("月球遊記／蟹老闆渡假去", 900.0, 1320.0) == "蟹老闆渡假去"
-    assert segment_title("失蹤記", 900.0, 1320.0) == "失蹤記"
+def test_long_lines_spread_frames_across_the_whole_line():
+    # 台詞 12 秒（超過 6 × 0.5 秒）：6 張平均分在台詞內，各取每段中點
+    assert frame_times(10.0, 22.0) == [11.0, 13.0, 15.0, 17.0, 19.0, 21.0]
+
+
+def _frame(size, box):
+    im = Image.new("RGB", size, (0, 0, 0))
+    im.paste((200, 180, 40), box)
+    return im
+
+
+def test_content_box_trims_black_bars_shared_by_all_frames():
+    # 左右各 80 px 黑邊
+    frames = [_frame((640, 480), (80, 0, 560, 480)), _frame((640, 480), (80, 0, 560, 480))]
+    assert content_box(frames) == (80, 0, 560, 480)
+
+
+def test_content_box_keeps_union_of_frames():
+    frames = [_frame((640, 480), (80, 0, 560, 480)), _frame((640, 480), (0, 0, 640, 480))]
+    assert content_box(frames) == (0, 0, 640, 480)
 
 
 def test_caption_lines_quote_and_indent_continuations():

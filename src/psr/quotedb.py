@@ -405,6 +405,19 @@ def nearest(db, vector: list[float], limit: int = 10) -> list[dict]:
     return [dict(zip(SEARCH_COLUMNS, row)) for row in rows]
 
 
+def grep_cues(db, terms: list[str], limit: int = 200) -> list[tuple[str, float, str]]:
+    """字幕含任一關鍵字的句子（語意搜尋找不到具體名詞時用），依集數與時間排序。"""
+    like = " OR ".join("c.text LIKE ? ESCAPE '\\'" for _ in terms)
+    args = [f"%{_escape_like(t)}%" for t in terms]
+    return [tuple(r) for r in db.execute(
+        f"""SELECT e.stem, c.start_s, c.text FROM cues c JOIN episodes e ON e.id = c.episode_id
+            WHERE {like} ORDER BY e.season, e.episode, c.idx LIMIT ?""", (*args, limit))]
+
+
+def _escape_like(term: str) -> str:
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def load_refs(db, refs: list[dict]) -> None:
     """參考庫：台灣配音版的台詞、譯名與迷因（有版權，只存 Turso）。"""
     db.transaction([("""INSERT INTO refs (phrase, kind, source) VALUES (?, ?, ?)

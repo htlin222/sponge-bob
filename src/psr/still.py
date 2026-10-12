@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -21,24 +20,17 @@ def frame_times(
     start: float, end: float, count: int = 6, step: float = 0.5, window: float = 3.0
 ) -> list[float]:
     """以台詞中點為中心、間距 `step` 排 `count` 個時間點；全部落在台詞前後 `window` 秒內，
-    排不下就縮小間距均分。"""
+    排不下就縮小間距均分。台詞比 `count × step` 長時，改成均分整段台詞、各取每段中點。"""
     if count == 1:
         return [round((start + end) / 2, 2)]
+    if end - start > count * step:
+        span = (end - start) / count
+        return [round(start + (i + 0.5) * span, 2) for i in range(count)]
     lo, hi = max(0.0, start - window), end + window
     step = min(step, (hi - lo) / (count - 1))
     first = (start + end) / 2 - step * (count - 1) / 2
     first = min(max(first, lo), hi - step * (count - 1))
     return [round(first + i * step, 2) for i in range(count)]
-
-
-def segment_title(title: str, t: float, total: float) -> str:
-    """一集有多個單元（「月球遊記／蟹老闆渡假去」）時，依時間點落在第幾段取單元名。"""
-    parts = title.split("／")
-    return (
-        parts[min(int(t / total * len(parts)), len(parts) - 1)]
-        if total > 0
-        else parts[0]
-    )
 
 
 def caption_lines(text: str) -> list[str]:
@@ -96,13 +88,20 @@ def grab(url: str, token: str, t: float, dest: Path) -> Path:
     return dest
 
 
-def compose(frame: Path, lines: list[str], source: str, font_path: str | None = None):
+def content_box(images, dark: int = 16) -> tuple[int, int, int, int]:
+    """所有候選畫面裡非黑色像素的聯集範圍，用來裁掉片源的黑邊（各張裁同一塊，尺寸才一致）。"""
+    boxes = [im.convert("L").point(lambda v: 255 if v > dark else 0).getbbox() for im in images]
+    boxes = [b for b in boxes if b] or [(0, 0, *images[0].size)]
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def compose(im, lines: list[str], source: str, font_path: str | None = None):
     from PIL import Image, ImageDraw, ImageFont
 
     font_path = font_path or next((f for f in FONTS if Path(f).exists()), None)
     if not font_path:
         raise SystemExit("找不到中文字型，請用 --font 指定")
-    im = Image.open(frame).convert("RGB")
     im = im.resize((WIDTH, im.height * WIDTH // im.width), Image.LANCZOS)
     big, small = ImageFont.truetype(font_path, 46), ImageFont.truetype(font_path, 28)
     margin, pad, gap = 70, 44, 16
@@ -166,15 +165,20 @@ def render_stills(
     prefix: str,
     font: str | None = None,
 ) -> list[Path]:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as tmp:
-        with ThreadPoolExecutor(max_workers=len(times)) as pool:
-            frames = list(
-                pool.map(
-                    lambda t: grab(url, token, t, Path(tmp) / f"{t:.2f}.png"), times
-                )
-            )
-        images = [compose(f, lines, source, font) for f in frames]
+    from PIL import Image
+
+    # 原始畫面留在快取：只改字幕或說話者時不必再從 Drive 抓
+    cache = out_dir / "_frames" / prefix
+    cache.mkdir(parents=True, exist_ok=True)
+
+    def fetch(t: float) -> Path:
+        dest = cache / f"{t:.2f}.png"
+        return dest if dest.exists() else grab(url, token, t, dest)
+
+    with ThreadPoolExecutor(max_workers=len(times)) as pool:
+        frames = [Image.open(f).convert("RGB") for f in pool.map(fetch, times)]
+    box = content_box(frames)
+    images = [compose(f.crop(box), lines, source, font) for f in frames]
     paths = []
     for i, im in enumerate(images, 1):
         path = out_dir / f"{prefix}_{i}.png"

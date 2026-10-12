@@ -376,6 +376,15 @@ def cmd_ctx(args) -> int:
     return 0
 
 
+def cmd_grep(args) -> int:
+    rows = quotedb.grep_cues(quotedb.connect(args.db), args.terms, args.limit)
+    for stem, start, text in rows:
+        print(f"{stem.removeprefix('海綿寶寶_')}  {_stamp(start):>6}  {text.replace(chr(10), ' ')}")
+    if len(rows) == args.limit:
+        print(f"（只列前 {args.limit} 句，用 --limit 調高）")
+    return 0
+
+
 def cmd_audit(args) -> int:
     db = quotedb.connect(args.db)
     print("## 審計問題（依類型）")
@@ -556,7 +565,7 @@ def cmd_still(args) -> int:
         return 1
     start, end = hit[0][1], hit[-1][2]
     text = args.caption.replace(" / ", "\n") if args.caption else "\n".join(c[3] for c in hit)
-    unit = args.title or still.segment_title(title, start, cues[-1][2])
+    unit = args.title or title  # 兩個單元名時不猜：順序常與片中相反，也可能是同一集的兩個譯名
     source = still.source_line(args.speaker, season, episode, unit, start)
 
     service = build("drive", "v3", credentials=drive.load_credentials(TOKEN_PATH.read_text()),
@@ -606,6 +615,9 @@ def main(argv=None) -> int:
     ctx.add_argument("episode", help="集名片段，例如 ep161 或 月球遊記")
     ctx.add_argument("at", help="時間點 m:ss")
     ctx.add_argument("--span", type=float, default=30, help="前後各幾秒")
+    grep = sub.add_parser("grep", help="字幕關鍵字搜尋（含任一詞），語意搜尋找不到具體名詞時用")
+    grep.add_argument("terms", nargs="+")
+    grep.add_argument("--limit", type=int, default=200)
     refs = sub.add_parser("refs", help="載入台灣配音版台詞參考庫（JSON：[{phrase, kind, source}]）")
     refs.add_argument("file")
     scan = sub.add_parser("scan", help="用拼音比對參考庫與全庫同音異寫找誤聽，只把嫌疑交給模型確認")
@@ -621,7 +633,7 @@ def main(argv=None) -> int:
     where.add_argument("--text", help="台詞片段（忽略標點，可跨句）")
     where.add_argument("--at", help="時間點 m:ss，取該時間的字幕")
     st.add_argument("--speaker", default="", help="說話者；字幕沒標，從畫面與前後文判斷後填入")
-    st.add_argument("--title", default="", help="單元名，預設依時間點從集名自動取")
+    st.add_argument("--title", default="", help="單元名；預設印完整集名（兩個單元名時用這個指定）")
     st.add_argument("--caption", default="", help="改寫字幕文字，用「 / 」換行")
     st.add_argument("--count", type=int, default=6, help="候選張數")
     st.add_argument("--step", type=float, default=0.5, help="候選間隔秒數")
@@ -635,7 +647,7 @@ def main(argv=None) -> int:
         args.folder = validate_folder_id(args.folder)
     return {"reseg": cmd_reseg, "fix": cmd_fix, "index": cmd_index, "ask": cmd_ask, "audit": cmd_audit,
             "refs": cmd_refs, "scan": cmd_scan, "still": cmd_still,
-            "embed": cmd_embed, "ctx": cmd_ctx}[args.cmd](args)
+            "embed": cmd_embed, "ctx": cmd_ctx, "grep": cmd_grep}[args.cmd](args)
 
 
 if __name__ == "__main__":
