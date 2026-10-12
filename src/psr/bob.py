@@ -253,7 +253,7 @@ def _label(ep: quotes.EpisodeMeta) -> str:
 
 def _tag_episode(text: str, meta: quotes.EpisodeMeta, taxonomy, model: str):
     cues = parse(text)
-    raw = llm.ask(quotes.user_prompt(meta, cues), system=quotes.SYSTEM_PROMPT,
+    raw = llm.ask(quotes.user_prompt(meta, cues), system=quotes.system_prompt(model),
                          schema=quotes.output_schema(taxonomy), model=model)
     return cues, quotes.accept(raw, cues, taxonomy)
 

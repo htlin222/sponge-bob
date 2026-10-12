@@ -99,6 +99,19 @@ SYSTEM_PROMPT = """你是《海綿寶寶》台灣配音版的台詞編輯，替�
 
 任務三：如果現有標籤明顯不夠用，在 new_tags 提出建議（不要為了提而提）。"""
 
+# DeepSeek 實測（5 集對照 Haiku）：★4+ 給到近一半、use_when 只寫 12–16 字。
+# 向量只比對 use_when，寫太短就搜不到；星等虛高會讓新集數在排序上佔便宜。
+_DEEPSEEK_CALIBRATION = """
+
+校準（務必遵守）：
+- quotability 從嚴：一集裡 ★4 以上大約只占挑出段落的四分之一到三分之一；★5 只給觀眾一聽就認得的經典台詞，一集通常 0–2 段。拿不定就往低給。
+- use_when 寫 20–35 字，具體寫出「誰、遇到什麼處境、引用來做什麼」，例如「同事交出的報告錯誤百出，想半開玩笑提醒他重做時」。不要只寫「鼓勵別人時」「生氣時」這種短句。"""
+
+
+def system_prompt(model: str) -> str:
+    """Haiku 用原本的 prompt；DeepSeek 另加星等與情境長度的校準。"""
+    return SYSTEM_PROMPT + _DEEPSEEK_CALIBRATION if model.startswith("deepseek") else SYSTEM_PROMPT
+
 
 def output_schema(taxonomy: Taxonomy) -> dict:
     tag_lists = {

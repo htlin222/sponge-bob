@@ -56,7 +56,7 @@ def main() -> int:
         meta = quotes.parse_episode_name(stem + SRT_SUFFIX)
         raw = llm.ask(
             quotes.user_prompt(meta, cues),
-            system=quotes.SYSTEM_PROMPT,
+            system=quotes.system_prompt(args.model),
             schema=quotes.output_schema(taxonomy),
             model=args.model,
         )

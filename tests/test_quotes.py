@@ -113,3 +113,13 @@ def test_taxonomy_rejects_duplicates(tmp_path):
 def test_index_version_changes_with_taxonomy():
     other = Taxonomy({**TAX.facets, "emotions": ("開心",)})
     assert quotes.index_version(TAX) != quotes.index_version(other)
+
+
+def test_haiku_keeps_the_original_prompt():
+    assert quotes.system_prompt("haiku") == quotes.SYSTEM_PROMPT
+
+
+def test_deepseek_prompt_adds_calibration_on_top_of_the_original():
+    prompt = quotes.system_prompt("deepseek-v4-flash")
+    assert prompt.startswith(quotes.SYSTEM_PROMPT)
+    assert "quotability 從嚴" in prompt and "use_when 寫 20–35 字" in prompt
