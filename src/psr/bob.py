@@ -408,10 +408,11 @@ def _accept(s: refaudit.Suspect, v: dict | None) -> tuple[bool, str, str]:
     if not v or not v.get("ok"):
         return False, "", ""
     wrong, right = (v.get("wrong") or "").strip(), (v.get("right") or "").strip()
-    # 同音異寫是逐字換同音字，字數必須相同；參考庫的名稱可能被聽漏字，才放寬到 ±2。
-    max_change = 0 if s.reason == "homophone" else fix.MAX_LENGTH_CHANGE
+    if wrong not in s.context and wrong.replace(" ", "\n") in s.context:
+        # 送給模型時換行攤平成空白，它回傳的片段也是空白
+        wrong, right = wrong.replace(" ", "\n"), right.replace(" ", "\n")
     ok = (wrong and right and wrong != right and wrong in s.context
-          and abs(len(wrong) - len(right)) <= max_change
+          and abs(len(wrong) - len(right)) <= fix.MAX_LENGTH_CHANGE
           and _puncts(wrong) == _puncts(right)  # 只修字，不准順手加減標點
           and fix.sound_similarity(wrong, right) >= fix.SOUND_THRESHOLD)
     return bool(ok), wrong, right
@@ -459,6 +460,8 @@ def cmd_scan(args) -> int:
                 continue
             rows = []
             for i, s in batch:
+                if i not in verdicts:  # 模型漏答的題目不記，下次重問
+                    continue
                 ok, wrong, right = _accept(s, verdicts.get(i))
                 rows.append((s.key[0], s.heard, s.proposed, ok, wrong, right, s.reason))
                 cache[(s.key[0], s.heard, s.proposed)] = (ok, wrong, right)
