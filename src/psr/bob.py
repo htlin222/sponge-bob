@@ -390,11 +390,11 @@ def cmd_refs(args) -> int:
     return 0
 
 
-SCAN_BATCH = 40
+SCAN_BATCH = 25  # 每題帶前後文，批次放小一點
 
 
-def _confirm(batch, model):
-    raw = claude_cli.ask(refaudit.confirm_prompt(batch), system=refaudit.CONFIRM_SYSTEM,
+def _confirm(batch, model, around=None):
+    raw = claude_cli.ask(refaudit.confirm_prompt(batch, around), system=refaudit.CONFIRM_SYSTEM,
                          schema=refaudit.CONFIRM_SCHEMA, model=model)
     return {v["id"]: v for v in raw.get("verdicts", []) if isinstance(v.get("id"), int)}
 
@@ -415,6 +415,15 @@ def cmd_scan(args) -> int:
     quotedb.init(db, quotes.load_taxonomy(TAXONOMY_PATH))
     rows = db.execute("SELECT e.stem, c.idx, c.text FROM cues c JOIN episodes e ON e.id = c.episode_id")
     cues = [((stem, idx), text) for stem, idx, text in rows if args.only in stem]
+    text_of = {key: text for key, text in cues}
+    titles = dict(db.execute("SELECT stem, title FROM episodes"))
+
+    def around(key):
+        stem, idx = key
+        n = refaudit.CONTEXT_CUES
+        return (titles.get(stem, ""),
+                [text_of[(stem, j)] for j in range(idx - n, idx) if (stem, j) in text_of],
+                [text_of[(stem, j)] for j in range(idx + 1, idx + n + 1) if (stem, j) in text_of])
     refs = quotedb.ref_phrases(db)
     found = refaudit.ref_suspects(cues, refs) + refaudit.homophone_suspects(cues)
     seen, suspects = set(), []
@@ -433,7 +442,7 @@ def cmd_scan(args) -> int:
 
     batches = [list(enumerate(todo[i:i + SCAN_BATCH])) for i in range(0, len(todo), SCAN_BATCH)]
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(_confirm, b, args.model): b for b in batches}
+        futures = {pool.submit(_confirm, b, args.model, around): b for b in batches}
         for n, fut in enumerate(as_completed(futures), 1):
             batch = futures[fut]
             try:

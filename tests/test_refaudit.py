@@ -75,3 +75,14 @@ def test_ref_match_rejects_spelling_variants_of_the_same_word():
 def test_ref_match_skips_phrases_that_are_common_in_the_corpus():
     cues = [(("e", i), "海綿寶寶你好") for i in range(9)]
     assert ref_suspects(cues, ["海綿寶貝你好"]) == []
+
+
+def test_confirm_prompt_includes_surrounding_cues_and_title():
+    from psr.refaudit import Suspect, confirm_prompt
+    s = Suspect(("ep1", 5), "幾張電源", "急徵店員", "我們在幾張電源", 0.9, "ref")
+    out = confirm_prompt([(0, s)], lambda key: ("急徵店員", ["蟹堡王", "缺人"], ["我準備好了"]))
+    assert "集名：急徵店員" in out
+    assert "前文：蟹堡王／缺人" in out
+    assert "本句：我們在幾張電源" in out
+    assert "後文：我準備好了" in out
+    assert "可疑：幾張電源　候選：急徵店員" in out

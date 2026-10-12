@@ -264,13 +264,17 @@ def _drop_nested(suspects: list[Suspect]) -> list[Suspect]:
     return out
 
 
+CONTEXT_CUES = 3  # 每題帶前後各幾條字幕：單看一句常判斷不了在講什麼
+
 CONFIRM_SYSTEM = """你是《海綿寶寶》台灣配音版的字幕校對。字幕由語音辨識產生，常把字音聽對、字選錯。
 
-每一題給你：字幕原文（context）、可疑片段（heard）、候選正字（proposed）。
-proposed 來自台灣觀眾熟知的台詞與譯名，或是同一個音在全部字幕裡最常見的寫法。
-請判斷 heard 在這句台詞裡是不是 proposed 的誤聽：
-- 是：ok=true，wrong 填 context 裡一字不差出現的最短錯誤片段，right 填改正後的寫法。
-- 不是（heard 本來就是正確的另一個詞、或改了反而不通）：ok=false。
+每一題給你：集名、前文、本句、後文，以及本句裡的可疑片段與候選寫法。
+候選來自台灣觀眾熟知的台詞與譯名，或是同一個音在全部字幕裡最常見的寫法。
+請讀前後文弄清楚這段在講什麼，再判斷可疑片段是不是誤聽：
+- 是：ok=true。wrong 填本句裡一字不差出現、涵蓋整個聽錯的詞的片段（不要只填一半，
+  例如本句是「幾張電源」而其實是「急徵店員」，wrong 要填「幾張電源」）；right 填改正後的寫法。
+  正確寫法不一定等於候選，以前後文為準。
+- 不是（本來就是正確的另一個詞、或改了反而不通）：ok=false。
 沒把握就填 false。"""
 
 CONFIRM_SCHEMA = {
@@ -294,11 +298,20 @@ CONFIRM_SCHEMA = {
 }
 
 
-def confirm_prompt(batch: list[tuple[int, Suspect]]) -> str:
-    return "\n".join(
-        f"{i}|context={s.context.replace(chr(10), ' ')}|heard={s.heard}|proposed={s.proposed}"
-        for i, s in batch
-    )
+def confirm_prompt(batch: list[tuple[int, Suspect]], around=None) -> str:
+    """around(key) → (集名, 前文, 後文)；不給就只送本句。"""
+    flat = lambda t: t.replace("\n", " ")
+    blocks = []
+    for i, s in batch:
+        title, before, after = around(s.key) if around else ("", [], [])
+        blocks.append("\n".join([
+            f"[{i}] 集名：{title}",
+            f"前文：{'／'.join(map(flat, before))}",
+            f"本句：{flat(s.context)}",
+            f"後文：{'／'.join(map(flat, after))}",
+            f"可疑：{flat(s.heard)}　候選：{s.proposed}",
+        ]))
+    return "\n\n".join(blocks)
 
 
 MIN_FIX_CHARS = 3
