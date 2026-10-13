@@ -7,6 +7,8 @@
     bob embed                             補齊／更新金句的語意向量（bob index 結束時也會做）
     bob ctx ep161 6:36                    列出某集某時間前後的字幕，看這段在演什麼
     bob grep 大巨蛋 市長                   字幕關鍵字搜尋（含任一詞）
+    bob evalset [-n 200]                  抽樣金句出檢索評測題（只存 Turso）
+    bob eval [--label baseline]           用評測題衡量 bob ask 的命中率
     bob backup [--keep 8]                 整庫備份到 Drive 的 _psr/backups/
     bob health                            檢查 Drive token、Turso、DeepSeek
     bob audit                             彙整 Haiku 審計出的字幕問題與標籤提案
@@ -34,7 +36,7 @@ from pathlib import Path
 
 from googleapiclient.discovery import build
 
-from psr import backup, cleanup, drive, fandom, fix, glossary, llm, quotedb, quotes, refaudit, semantic, still
+from psr import backup, cleanup, drive, evalset, fandom, fix, glossary, llm, quotedb, quotes, refaudit, semantic, still
 from psr import punctuate as punct_mod
 from psr.batch import WORK_SUBFOLDER, validate_folder_id
 from psr.cli import TOKEN_PATH, _build_cues
@@ -329,6 +331,74 @@ def cmd_embed(args) -> int:
     db = quotedb.connect(args.db)
     quotedb.init(db, quotes.load_taxonomy(TAXONOMY_PATH))
     print(f"更新 {_sync_vectors(db)} 段金句的語意向量")
+    return 0
+
+
+def cmd_evalset(args) -> int:
+    """抽樣金句，讓模型出「使用者會怎麼問」的評測題；已出過題的金句跳過，中斷後重跑會接著做。"""
+    db = quotedb.connect(args.db)
+    quotedb.init(db, quotes.load_taxonomy(TAXONOMY_PATH))
+    rows = [tuple(r) for r in db.execute("SELECT id, episode_id, quotability FROM quotes")]
+    done = {qid for qid, *_ in quotedb.eval_queries(db)}
+    todo = [qid for qid in evalset.sample(rows, args.n, args.seed) if qid not in done]
+    print(f"抽樣 {args.n} 段，已出題 {len(done)}，待出題 {len(todo)}")
+    items = []
+    for qid in todo:
+        ep_id, cue_from, cue_to, text = db.execute(
+            "SELECT episode_id, cue_from, cue_to, text FROM quotes WHERE id = ?", (qid,))[0]
+        context = [r[0].replace("\n", " ") for r in db.execute(
+            "SELECT text FROM cues WHERE episode_id = ? AND idx BETWEEN ? AND ? ORDER BY idx",
+            (ep_id, cue_from - 4, cue_to + 3))]
+        items.append((qid, text, context))
+    batches = [items[i:i + args.batch] for i in range(0, len(items), args.batch)]
+
+    def run(batch):
+        raw = llm.ask(evalset.gen_prompt(batch), system=evalset.GEN_SYSTEM,
+                      schema=evalset.GEN_SCHEMA, model=args.model)
+        return evalset.accept(raw, {qid: text for qid, text, _ in batch})
+
+    made = failures = 0
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        for fut in as_completed([pool.submit(run, b) for b in batches]):
+            try:
+                got = fut.result()
+            except Exception as exc:  # 單批失敗不影響其他批，重跑會補
+                failures += 1
+                print(f"  一批出題失敗：{type(exc).__name__}", file=sys.stderr)
+                continue
+            quotedb.save_eval_queries(db, got)
+            made += len(got)
+    print(f"新增評測題 {made} 題（失敗 {failures} 批）")
+    return 1 if failures else 0
+
+
+def cmd_eval(args) -> int:
+    """用評測題跑一次 `bob ask` 的檢索，印各問法的命中率（只印統計，不印題目）。"""
+    db = quotedb.connect(args.db)
+    queries = quotedb.eval_queries(db)
+    if not queries:
+        print("還沒有評測題，先跑 `bob evalset`。")
+        return 1
+    k = max(evalset.KS)
+
+    def rank(q):
+        qid, _, query = q
+        hits = quotedb.nearest(db, semantic.embed_query(query), limit=k)
+        return evalset.rank_of(qid, [h["id"] for h in hits])
+
+    semantic.embed_query("")  # 先在主執行緒載入模型
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        ranks = list(pool.map(rank, queries))
+    by_style = {style: evalset.metrics([r for (_, s, _), r in zip(queries, ranks) if s == style])
+                for style in sorted({s for _, s, _ in queries})}
+    by_style["all"] = evalset.metrics(ranks)
+    cols = [f"hit@{n}" for n in evalset.KS] + ["mrr"]
+    print(f"{'問法':<12}{'題數':>6}" + "".join(f"{c:>9}" for c in cols))
+    for style, m in by_style.items():
+        print(f"{style:<12}{m['n']:>6}" + "".join(f"{m[c]:>9.3f}" for c in cols))
+    if args.label:
+        quotedb.save_eval_run(db, args.label, by_style)
+        print(f"已記錄為「{args.label}」")
     return 0
 
 
@@ -762,6 +832,15 @@ def main(argv=None) -> int:
     grep = sub.add_parser("grep", help="字幕關鍵字搜尋（含任一詞），語意搜尋找不到具體名詞時用")
     grep.add_argument("terms", nargs="+")
     grep.add_argument("--limit", type=int, default=200)
+    es = sub.add_parser("evalset", help="抽樣金句，讓模型出檢索評測題（只存 Turso）")
+    es.add_argument("-n", type=int, default=200, help="抽幾段金句（每集至多一段）")
+    es.add_argument("--seed", type=int, default=1)
+    es.add_argument("--batch", type=int, default=8, help="每次呼叫出幾段的題")
+    es.add_argument("--workers", type=int, default=4)
+    es.add_argument("--model", default="opus")
+    ev = sub.add_parser("eval", help="用評測題衡量 `bob ask` 的檢索命中率")
+    ev.add_argument("--label", default="", help="記錄這次結果的名稱（例如 baseline），不填就不記錄")
+    ev.add_argument("--workers", type=int, default=8)
     refs = sub.add_parser("refs", help="載入台灣配音版台詞參考庫（JSON：[{phrase, kind, source}]）")
     refs.add_argument("file")
     scan = sub.add_parser("scan", help="用拼音比對參考庫與全庫同音異寫找誤聽，只把嫌疑交給模型確認")
@@ -800,7 +879,7 @@ def main(argv=None) -> int:
         args.folder = validate_folder_id(args.folder)
     return {"reseg": cmd_reseg, "fix": cmd_fix, "index": cmd_index, "ask": cmd_ask, "audit": cmd_audit,
             "refs": cmd_refs, "scan": cmd_scan, "still": cmd_still,
-            "embed": cmd_embed, "ctx": cmd_ctx, "grep": cmd_grep,
+            "embed": cmd_embed, "ctx": cmd_ctx, "evalset": cmd_evalset, "eval": cmd_eval, "grep": cmd_grep,
             "backup": cmd_backup, "health": cmd_health}[args.cmd](args)
 
 

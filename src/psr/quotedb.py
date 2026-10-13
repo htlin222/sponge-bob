@@ -126,6 +126,17 @@ SCHEMA = [
         fixed TEXT NOT NULL,
         reason TEXT NOT NULL,
         PRIMARY KEY (stem, wrong))""",
+    # `bob eval` 的評測題：由金句衍生，所以只放這裡
+    """CREATE TABLE IF NOT EXISTS eval_queries (
+        quote_id INTEGER NOT NULL REFERENCES quotes(id),
+        style TEXT NOT NULL,
+        query TEXT NOT NULL,
+        PRIMARY KEY (quote_id, style))""",
+    """CREATE TABLE IF NOT EXISTS eval_runs (
+        run_at TEXT NOT NULL,
+        label TEXT NOT NULL,
+        style TEXT NOT NULL,
+        metrics TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS fix_log (
         stem TEXT NOT NULL,
         cue_idx INTEGER NOT NULL,
@@ -476,6 +487,24 @@ def fandom_checked(db) -> set[tuple[str, str, str]]:
     """已經附英文原版台詞重新確認過的嫌疑，不再重問。"""
     return {tuple(r) for r in db.execute(
         "SELECT stem, heard, proposed FROM scan_verdicts WHERE reason = 'fandom'")}
+
+
+def eval_queries(db) -> list[tuple[int, str, str]]:
+    """(quote_id, style, query)；出題的金句若被重標刪掉了就不算。"""
+    return [tuple(r) for r in db.execute(
+        """SELECT e.quote_id, e.style, e.query FROM eval_queries e JOIN quotes q ON q.id = e.quote_id
+           ORDER BY e.quote_id, e.style""")]
+
+
+def save_eval_queries(db, rows: list[tuple[int, str, str]]) -> None:
+    db.transaction([("INSERT OR REPLACE INTO eval_queries (quote_id, style, query) VALUES (?, ?, ?)", row)
+                    for row in rows])
+
+
+def save_eval_run(db, label: str, by_style: dict[str, dict]) -> None:
+    at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    db.transaction([("INSERT INTO eval_runs (run_at, label, style, metrics) VALUES (?, ?, ?, ?)",
+                     (at, label, style, json.dumps(m))) for style, m in by_style.items()])
 
 
 def scan_verdicts(db) -> dict[tuple[str, str, str], tuple[bool, str, str]]:
