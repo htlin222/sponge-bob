@@ -36,6 +36,8 @@ uv run bob --help                     # 金句庫指令，完整列表見 README
 | `src/psr/quotes.py`                            | 金句標記 prompt、schema、`accept` 驗證；`PROMPT_VERSION` 改了會整批重標               |
 | `src/psr/fix.py`、`refaudit.py`、`glossary.py` | 誤聽修正、`bob scan`、角色名對照表                                                    |
 | `src/psr/llm.py`                               | `deepseek-*` 走 DeepSeek API，其他模型名走本機 `claude -p`                            |
+| `src/psr/search.py`、`lexical.py`              | `bob ask` 混合檢索：向量＋雙字詞 BM25，多句查詢 RRF 合併                               |
+| `src/psr/evalset.py`                           | `bob evalset` 出檢索評測題、`bob eval` 量命中率（改檢索前後各跑一次比較）             |
 | `src/psr/still.py`                             | `bob still` 截圖卡                                                                    |
 | `glossary.yml`、`taxonomy.yml`                 | 誤聽對照表、封閉標籤表（都要人工審過才改）                                            |
 | `.github/workflows/`                           | `ci`、`batch`（每 6 小時）、`library`（batch 後）、`health`（每天）、`backup`（每週） |
@@ -54,6 +56,7 @@ Drive 影片 ─batch─▶ <集名>.zh-Hant.srt ─bob fix─▶ 修正後 SRT�
 
 主要表：`episodes`、`cues`（全部字幕，`start_s`/`end_s`）、`quotes`（`cue_from..cue_to`、`speaker`、`quotability`、`use_when`）、
 `tags`／`quote_tags`、`quote_vecs`（`use_when` 的 512 維 bge-small-zh 向量）。
+評測：`eval_queries`、`eval_rewrites`、`eval_runs`（題目由台詞衍生，只放 Turso）。
 修正相關：`srt_fixes`、`fix_log`、`episode_fixes`、`scan_verdicts`、`refs`、`audit_issues`、`tag_suggestions`、`punctuations`、`resegments`。
 
 - 金句文字一律依編號從字幕切出，模型只回編號。

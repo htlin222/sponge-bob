@@ -152,3 +152,12 @@ def test_turso_blobs_decode_without_base64_padding():
     # Hrana 回傳的 BLOB 是不補 = 的 base64：b"\x01\x02" 是 "AQI"
     assert quotedb._decode({"type": "blob", "base64": "AQI"}) == b"\x01\x02"
     assert quotedb._decode({"type": "blob", "base64": "AQI="}) == b"\x01\x02"
+
+
+def test_quotes_by_id_keeps_requested_order_and_skips_missing():
+    db = _db(_quote(1, 1, "我準備好了", "上班前"), _quote(2, 2, "又是星期一", "週一"))
+    ids = {text: qid for qid, text, _, _ in quotedb.quote_docs(db)}
+    got = quotedb.quotes_by_id(db, [ids["又是星期一"], 999, ids["我準備好了"]])
+    assert [h["text"] for h in got] == ["又是星期一", "我準備好了"]
+    assert got[0]["title"] == META.title and got[0]["distance"] is None
+    assert quotedb.quotes_by_id(db, []) == []

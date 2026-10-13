@@ -3,7 +3,7 @@
     bob reseg [--limit N] [--only 集名片段] 用 Haiku 重新加標點與換人記號，重新斷句字幕
     bob fix [--limit N] [--workers 4]     照語音修正誤聽（同音字），改寫 Drive 上的字幕
     bob index [--limit N] [--workers 4]   用 Haiku 標記已修正的字幕
-    bob ask "明天要上台報告好緊張"          語意搜尋最貼切的台詞（--pick 再讓模型挑）
+    bob ask "明天要上台報告好緊張" ["朋友很怕上台報告時"]  混合檢索最貼切的台詞（--rewrite 讓模型改寫、--pick 再讓模型挑）
     bob embed                             補齊／更新金句的語意向量（bob index 結束時也會做）
     bob ctx ep161 6:36                    列出某集某時間前後的字幕，看這段在演什麼
     bob grep 大巨蛋 市長                   字幕關鍵字搜尋（含任一詞）
@@ -36,7 +36,7 @@ from pathlib import Path
 
 from googleapiclient.discovery import build
 
-from psr import backup, cleanup, drive, evalset, fandom, fix, glossary, llm, quotedb, quotes, refaudit, semantic, still
+from psr import backup, cleanup, drive, evalset, fandom, fix, glossary, llm, quotedb, quotes, refaudit, search, semantic, still
 from psr import punctuate as punct_mod
 from psr.batch import WORK_SUBFOLDER, validate_folder_id
 from psr.cli import TOKEN_PATH, _build_cues
@@ -380,11 +380,27 @@ def cmd_eval(args) -> int:
         print("還沒有評測題，先跑 `bob evalset`。")
         return 1
     k = max(evalset.KS)
+    extra: dict[str, list[str]] = {}
+    if args.rewrite:
+        quotedb.init(db, quotes.load_taxonomy(TAXONOMY_PATH))
+        extra = quotedb.eval_rewrites(db, args.rewrite)
+        todo = sorted({q for _, _, q in queries} - set(extra))
+        batches = [todo[i:i + 25] for i in range(0, len(todo), 25)]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for batch, got in zip(batches, pool.map(lambda b: search.rewrite_many(b, args.rewrite), batches)):
+                rows = {batch[i]: situations for i, situations in got.items()}
+                quotedb.save_eval_rewrites(db, args.rewrite, rows)
+                extra.update(rows)
+        print(f"改寫（{args.rewrite}）：{sum(1 for _, _, q in queries if q in extra)}/{len(queries)} 題")
+    index = search.lexical_index(db) if args.mode == "hybrid" else None
 
     def rank(q):
         qid, _, query = q
-        hits = quotedb.nearest(db, semantic.embed_query(query), limit=k)
-        return evalset.rank_of(qid, [h["id"] for h in hits])
+        if index is None:
+            ids = [h["id"] for h in quotedb.nearest(db, semantic.embed_query(query), limit=k)]
+        else:
+            ids = search.rank(db, [query, *extra.get(query, [])], limit=k, index=index)
+        return evalset.rank_of(qid, ids)
 
     semantic.embed_query("")  # 先在主執行緒載入模型
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -413,13 +429,18 @@ def _stamp(seconds: float) -> str:
 
 def cmd_ask(args) -> int:
     db = quotedb.connect(args.db)
-    hits = quotedb.nearest(db, semantic.embed_query(args.situation), limit=30 if args.pick else args.top)
+    queries = list(args.situation)
+    if args.rewrite:
+        extra = search.rewrite(queries[0], args.model)
+        print("改寫：" + "／".join(extra))
+        queries += extra
+    hits = search.search(db, queries, limit=30 if args.pick else args.top)
     if not hits:
         print("金句還沒有語意向量，先跑 `bob embed`。")
         return 1
     if args.pick:
         listing = "\n\n".join(f"[{c['id']}] {c['speaker']}：{c['text']}\n情境：{c['use_when']}" for c in hits)
-        picks = llm.ask(f"使用者的處境：{args.situation}\n\n候選台詞：\n{listing}",
+        picks = llm.ask(f"使用者的處境：{'／'.join(args.situation)}\n\n候選台詞：\n{listing}",
                                system=PICK_SYSTEM, model=args.model, schema={
             "type": "object",
             "properties": {"picks": {"type": "array", "maxItems": 5, "items": {
@@ -820,9 +841,10 @@ def main(argv=None) -> int:
         if name == "fix":
             p.add_argument("--quiet", action="store_true", help="不印修正範例（公開的 Actions log 用）")
     ask = sub.add_parser("ask", help="描述你的處境，找海綿寶寶台詞")
-    ask.add_argument("situation")
+    ask.add_argument("situation", nargs="+", help="處境；可多給幾句改寫過的情境，一起合併排名")
     ask.add_argument("-n", "--top", type=int, default=10, help="列出幾段（不加 --pick 時）")
     ask.add_argument("--pick", action="store_true", help="從前 30 段再讓模型挑 1–5 段並說明理由")
+    ask.add_argument("--rewrite", action="store_true", help="先讓模型把第一句改寫成三句使用情境再搜")
     ask.add_argument("--model", default="haiku")
     sub.add_parser("embed", help="補齊／更新金句的語意向量")
     ctx = sub.add_parser("ctx", help="列出某集某時間前後的字幕")
@@ -841,6 +863,8 @@ def main(argv=None) -> int:
     ev = sub.add_parser("eval", help="用評測題衡量 `bob ask` 的檢索命中率")
     ev.add_argument("--label", default="", help="記錄這次結果的名稱（例如 baseline），不填就不記錄")
     ev.add_argument("--workers", type=int, default=8)
+    ev.add_argument("--mode", choices=("hybrid", "vec"), default="hybrid", help="vec＝只用語意向量（舊版）")
+    ev.add_argument("--rewrite", default="", metavar="MODEL", help="每題先用這個模型改寫成三句情境（結果快取在 Turso）")
     refs = sub.add_parser("refs", help="載入台灣配音版台詞參考庫（JSON：[{phrase, kind, source}]）")
     refs.add_argument("file")
     scan = sub.add_parser("scan", help="用拼音比對參考庫與全庫同音異寫找誤聽，只把嫌疑交給模型確認")

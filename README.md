@@ -113,7 +113,7 @@ OAuth 同意畫面停在 **測試中** 時，Google 發的 refresh token **7 天
 uv run bob reseg            # 從 _psr/ 的原始轉錄用 Haiku 重新加標點與換人記號、重新斷句（--only、--redo）
 uv run bob fix              # 照語音修正誤聽，改寫 Drive 上的字幕（原檔備份為 _psr/<集名>.asr.srt）
 uv run bob index            # 標記已修正、尚未標記或內容已變的字幕（--limit、--workers）
-uv run bob ask "週一不想上班"  # 語意搜尋 → 台詞、集數與時間碼，約 1 秒（-n 筆數；--pick 再讓 Haiku 挑並說明）
+uv run bob ask "週一不想上班" "放假結束要回去上班很痛苦時"  # 混合檢索（語意向量＋字面比對）→ 台詞、集數與時間碼，可多給幾句情境一起排名（-n 筆數；--rewrite 讓 Haiku 改寫；--pick 再讓 Haiku 挑並說明）
 uv run bob ctx ep161 6:36   # 某集某時間前後的字幕，看這段在演什麼
 uv run bob grep 大巨蛋 市長   # 字幕關鍵字搜尋（含任一詞）；具體名詞語意搜尋找不到時用
 uv run bob backup           # 整庫備份成 SQLite，gzip 後放 Drive 的 _psr/backups/（--keep 8）

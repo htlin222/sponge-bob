@@ -132,6 +132,11 @@ SCHEMA = [
         style TEXT NOT NULL,
         query TEXT NOT NULL,
         PRIMARY KEY (quote_id, style))""",
+    """CREATE TABLE IF NOT EXISTS eval_rewrites (
+        query TEXT NOT NULL,
+        model TEXT NOT NULL,
+        situations TEXT NOT NULL,
+        PRIMARY KEY (query, model))""",
     """CREATE TABLE IF NOT EXISTS eval_runs (
         run_at TEXT NOT NULL,
         label TEXT NOT NULL,
@@ -420,6 +425,19 @@ def nearest(db, vector: list[float], limit: int = 10) -> list[dict]:
     return [dict(zip(SEARCH_COLUMNS, row)) for row in rows]
 
 
+def quotes_by_id(db, ids: list[int]) -> list[dict]:
+    """依給定順序取回金句（混合檢索合併排名後用；沒有距離可言，distance 為 None）。"""
+    if not ids:
+        return []
+    marks = ", ".join("?" for _ in ids)
+    rows = db.execute(
+        f"""SELECT q.id, e.season, e.episode, e.title, q.start_s, q.end_s, q.text, q.speaker,
+                   q.quotability, q.use_when, NULL
+            FROM quotes q JOIN episodes e ON e.id = q.episode_id WHERE q.id IN ({marks})""", ids)
+    by_id = {row[0]: dict(zip(SEARCH_COLUMNS, row)) for row in rows}
+    return [by_id[i] for i in ids if i in by_id]
+
+
 def grep_cues(db, terms: list[str], limit: int = 200) -> list[tuple[str, float, str]]:
     """字幕含任一關鍵字的句子（語意搜尋找不到具體名詞時用），依集數與時間排序。"""
     like = " OR ".join("c.text LIKE ? ESCAPE '\\'" for _ in terms)
@@ -499,6 +517,16 @@ def eval_queries(db) -> list[tuple[int, str, str]]:
 def save_eval_queries(db, rows: list[tuple[int, str, str]]) -> None:
     db.transaction([("INSERT OR REPLACE INTO eval_queries (quote_id, style, query) VALUES (?, ?, ?)", row)
                     for row in rows])
+
+
+def eval_rewrites(db, model: str) -> dict[str, list[str]]:
+    return {q: json.loads(s) for q, s in db.execute(
+        "SELECT query, situations FROM eval_rewrites WHERE model = ?", (model,))}
+
+
+def save_eval_rewrites(db, model: str, rows: dict[str, list[str]]) -> None:
+    db.transaction([("INSERT OR REPLACE INTO eval_rewrites (query, model, situations) VALUES (?, ?, ?)",
+                     (q, model, json.dumps(s, ensure_ascii=False))) for q, s in rows.items()])
 
 
 def save_eval_run(db, label: str, by_style: dict[str, dict]) -> None:
